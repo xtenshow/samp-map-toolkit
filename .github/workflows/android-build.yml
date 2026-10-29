@@ -1,0 +1,47 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/android/**'
+      - '.github/workflows/android-build.yml'
+permissions:
+  contents: read
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: src/android
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev libltdl-dev
+      - name: Install Buildozer and Cython
+        run: |
+          python -m pip install --upgrade pip==24.3.1
+          python -m pip install buildozer==1.5.0 Cython==0.29.36
+      - name: Validate Python syntax
+        run: python -m compileall -q main.py android_storage.py
+      - name: Build APK
+        run: buildozer android debug
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RadarTool-Android-APK
+          path: src/android/bin/*.apk
+          if-no-files-found: error
+          retention-days: 30
