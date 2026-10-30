@@ -18,6 +18,11 @@ from kivy.properties import NumericProperty
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 from kivy.uix.image import Image as KivyImage
+from kivy.uix.modalview import ModalView
+from kivy.uix.boxlayout import BoxLayout as KivyBoxLayout
+from kivy.uix.button import Button as KivyButton
+from kivy.uix.label import Label as KivyLabel
+from kivy.uix.textinput import TextInput as KivyTextInput
 from kivy.uix.screenmanager import Screen, ScreenManager
 
 from kivymd.app import MDApp
@@ -123,7 +128,7 @@ def pick_file(on_pick, filters=None, app_ref=None):
             _picker_error(app_ref, "Android file access unavailable",
                           "The Android Storage Access Framework could not be initialized.")
             return
-        app_ref.storage.pick_file(on_pick, mime_type="image/*")
+        app_ref.open_file_browser("file", on_pick)
         return
 
     def cb(selection):
@@ -142,7 +147,8 @@ def pick_dir(on_pick, app_ref=None, output=False):
             _picker_error(app_ref, "Android folder access unavailable",
                           "The Android Storage Access Framework could not be initialized.")
             return
-        app_ref.storage.pick_directory(output=output, callback=on_pick)
+        app_ref.open_file_browser(
+            "output_folder" if output else "input_folder", on_pick)
         return
 
     def cb(selection):
@@ -161,7 +167,8 @@ def pick_save_file(on_pick, app_ref=None, default_name="recolored.png"):
             _picker_error(app_ref, "Android save unavailable",
                           "The Android Storage Access Framework could not be initialized.")
             return
-        app_ref.storage.pick_save_file(on_pick, default_name=default_name)
+        app_ref.open_file_browser(
+            "save", on_pick, default_name=default_name)
         return
 
     def cb(selection):
@@ -547,6 +554,8 @@ class MergeItem(BaseToolItem):
                 if i % 12 == 0:
                     self._update_progress(found / TOTAL_TILES)
             canvas.save(os.path.join(out_dir, "map.png"))
+            if self.app_ref.storage is not None:
+                self.app_ref.storage.export_directory_if_needed(out_dir)
             self._done(found, tw, th)
         except Exception as e:
             self._fail(str(e))
@@ -557,16 +566,6 @@ class MergeItem(BaseToolItem):
 
     @mainthread
     def _done(self, found, tw, th):
-        try:
-            if self.app_ref.storage is not None:
-                self.app_ref.storage.export_directory_if_needed(self.output_folder)
-        except Exception as exc:
-            self.progress.value = 0
-            self.app_ref.set_status("Export failed", RED)
-            self.app_ref.show_dialog(
-                "Export failed",
-                f"map.png was generated in app storage, but could not be exported:\n{exc}")
-            return
         self.progress.value = 100
         self.app_ref.set_status(f"Merged {found} tiles -> map.png", GREEN)
         self.app_ref.show_dialog(
@@ -695,6 +694,8 @@ class SplitItem(BaseToolItem):
                     os.path.join(out_dir, f"radar{i:02}.png"))
                 if i % 12 == 0:
                     self._update_progress((i + 1) / TOTAL_TILES)
+            if self.app_ref.storage is not None:
+                self.app_ref.storage.export_directory_if_needed(out_dir)
             self._done(tw, th)
         except Exception as e:
             self._fail(str(e))
@@ -705,16 +706,6 @@ class SplitItem(BaseToolItem):
 
     @mainthread
     def _done(self, tw, th):
-        try:
-            if self.app_ref.storage is not None:
-                self.app_ref.storage.export_directory_if_needed(self.output_folder)
-        except Exception as exc:
-            self.progress.value = 0
-            self.app_ref.set_status("Export failed", RED)
-            self.app_ref.show_dialog(
-                "Export failed",
-                f"Tiles were generated in app storage, but could not be exported:\n{exc}")
-            return
         self.progress.value = 100
         self.app_ref.set_status("Exported 144 tiles", GREEN)
         self.app_ref.show_dialog(
@@ -824,6 +815,8 @@ class TxDItem(BaseToolItem):
                 except Exception as e:
                     errors.append(f"{f}: {e}")
                 self._update_progress((idx + 1) / len(files))
+            if self.app_ref.storage is not None:
+                self.app_ref.storage.export_directory_if_needed(self.output_folder)
             self._done(ok, len(errors), errors)
         except Exception as e:
             self._fail(str(e))
@@ -834,16 +827,6 @@ class TxDItem(BaseToolItem):
 
     @mainthread
     def _done(self, ok, err_count, errors):
-        try:
-            if self.app_ref.storage is not None:
-                self.app_ref.storage.export_directory_if_needed(self.output_folder)
-        except Exception as exc:
-            self.progress.value = 0
-            self.app_ref.set_status("Export failed", RED)
-            self.app_ref.show_dialog(
-                "Export failed",
-                f"TXD files were generated in app storage, but could not be exported:\n{exc}")
-            return
         self.progress.value = 100
         if err_count:
             self.app_ref.set_status(
@@ -879,6 +862,7 @@ class ColorItem(BaseToolItem):
         self.replace_rgb = (255, 0, 0)
         self.tolerance = 40
         self._preview_event = None
+        self._preview_generation = 0
         self._build()
 
     def _build(self):
@@ -1002,25 +986,40 @@ class ColorItem(BaseToolItem):
 
     def _on_image(self, path):
         self.app_ref.set_status("Loading image...", YELLOW)
+        threading.Thread(
+            target=self._load_image_worker, args=(path,), daemon=True
+        ).start()
+
+    def _load_image_worker(self, path):
         try:
-            self.image_path = path
-            self.pil_image = Image.open(path).convert("RGBA")
-            self._img_path_label.text = truncate_path(path)
-            self._img_path_label.text_color = hex_rgba(PRIMARY)
-
-            preview = self.pil_image.copy()
+            with Image.open(path) as source:
+                full_image = source.convert("RGBA")
+            preview = full_image.copy()
             preview.thumbnail((400, 400), Image.LANCZOS)
-            self.preview_src = preview
-            self._orig_image.texture = pil_to_texture(preview)
-
-            # initial live preview with current settings
-            self._schedule_preview()
-            self.app_ref.set_status(
-                f"Loaded {os.path.basename(path)}", GREEN)
+            Clock.schedule_once(
+                lambda _dt: self._apply_loaded_image(path, full_image, preview), 0
+            )
         except Exception as exc:
-            self.app_ref.set_status("Load failed", RED)
-            self.app_ref.show_dialog(
-                "Error", f"Could not open image:\n{exc}")
+            Clock.schedule_once(
+                lambda _dt: self._image_load_failed(str(exc)), 0
+            )
+
+    @mainthread
+    def _apply_loaded_image(self, path, full_image, preview):
+        self.image_path = path
+        self.pil_image = full_image
+        self._img_path_label.text = truncate_path(path)
+        self._img_path_label.text_color = hex_rgba(PRIMARY)
+        self.preview_src = preview
+        self._orig_image.texture = pil_to_texture(preview)
+        self._schedule_preview()
+        self.app_ref.set_status(
+            f"Loaded {os.path.basename(path)}", GREEN)
+
+    @mainthread
+    def _image_load_failed(self, message):
+        self.app_ref.set_status("Load failed", RED)
+        self.app_ref.show_dialog("Error", f"Could not open image:\n{message}")
 
     def _tap_original(self, instance, touch):
         if self.preview_src is None:
@@ -1195,17 +1194,36 @@ class ColorItem(BaseToolItem):
             self._preview_event.cancel()
         self._preview_event = Clock.schedule_once(self._update_preview, 0.2)
 
-    @mainthread
     def _update_preview(self, dt):
         self._preview_event = None
         if self.preview_src is None:
             return
+        self._preview_generation += 1
+        generation = self._preview_generation
+        image = self.preview_src.copy()
+        target = tuple(self.target_rgb)
+        replace = tuple(self.replace_rgb)
+        tolerance = int(self.tolerance)
+        threading.Thread(
+            target=self._preview_worker,
+            args=(generation, image, target, replace, tolerance),
+            daemon=True,
+        ).start()
+
+    def _preview_worker(self, generation, image, target, replace, tolerance):
         try:
-            result = recolor_image(self.preview_src, self.target_rgb,
-                                   self.replace_rgb, self.tolerance)
-            self._live_image.texture = pil_to_texture(result)
+            result = recolor_image(image, target, replace, tolerance)
+            Clock.schedule_once(
+                lambda _dt: self._apply_preview(generation, result), 0
+            )
         except Exception:
-            pass
+            return
+
+    @mainthread
+    def _apply_preview(self, generation, result):
+        if generation != self._preview_generation:
+            return
+        self._live_image.texture = pil_to_texture(result)
 
     # -- save ----------------------------------------------------------
     def _save(self):
@@ -1230,23 +1248,15 @@ class ColorItem(BaseToolItem):
             result = recolor_image(self.pil_image, self.target_rgb,
                                    self.replace_rgb, self.tolerance)
             result.save(out_path)
-            self._save_done(out_path)
+            filename = os.path.basename(out_path)
+            if self.app_ref.storage is not None:
+                filename = self.app_ref.storage.export_file_if_needed(out_path)
+            self._save_done(filename)
         except Exception as exc:
             self._save_fail(str(exc))
 
     @mainthread
-    def _save_done(self, path):
-        try:
-            filename = os.path.basename(path)
-            if self.app_ref.storage is not None:
-                filename = self.app_ref.storage.export_file_if_needed(path)
-        except Exception as exc:
-            self.app_ref.set_status("Export failed", RED)
-            self.app_ref.show_dialog(
-                "Export failed",
-                f"The image was created in app storage, but export failed:\n{exc}")
-            return
-
+    def _save_done(self, filename):
         self.app_ref.set_status(f"Saved -> {filename}", GREEN)
         self.app_ref.show_dialog(
             "Done", f"Color replaced and saved!\n{filename}")
@@ -1255,6 +1265,315 @@ class ColorItem(BaseToolItem):
     def _save_fail(self, msg):
         self.app_ref.set_status("Save failed", RED)
         self.app_ref.show_dialog("Error", msg)
+
+
+
+# ============================================================================
+#  IN-APP ANDROID FILE BROWSER
+# ============================================================================
+class InAppFileBrowser:
+    """Small SAF-backed browser; only the initial storage grant uses Android UI."""
+
+    IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+    def __init__(self, app_ref, mode, callback, default_name="recolored.png"):
+        self.app_ref = app_ref
+        self.storage = app_ref.storage
+        self.mode = mode
+        self.callback = callback
+        self.current_id = self.storage.root_document_id
+        self.path_names = ["Storage"]
+        self._loading = False
+        self.modal = ModalView(
+            size_hint=(0.96, 0.90),
+            auto_dismiss=False,
+            background_color=(0.035, 0.04, 0.07, 0.98),
+        )
+        root = KivyBoxLayout(
+            orientation="vertical",
+            padding=dp(12),
+            spacing=dp(8),
+        )
+        self.title_label = KivyLabel(
+            text=("Select image" if mode == "file" else
+                  "Choose output name" if mode == "save" else
+                  "Choose input folder" if mode == "input_folder" else
+                  "Choose output folder"),
+            size_hint_y=None,
+            height=dp(34),
+            bold=True,
+            font_size=dp(18),
+            color=hex_rgba(FG),
+        )
+        root.add_widget(self.title_label)
+        self.path_label = KivyLabel(
+            text=" / ".join(self.path_names),
+            size_hint_y=None,
+            height=dp(26),
+            font_size=dp(11),
+            color=hex_rgba(FG_DIM),
+            halign="left",
+        )
+        root.add_widget(self.path_label)
+
+        toolbar = KivyBoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(42),
+            spacing=dp(8),
+        )
+        self.up_button = self._make_button("Up", self._go_up, width=None)
+        self.refresh_button = self._make_button("Refresh", self._refresh, width=None)
+        toolbar.add_widget(self.up_button)
+        toolbar.add_widget(self.refresh_button)
+        root.add_widget(toolbar)
+
+        self.name_input = None
+        if mode == "save":
+            self.name_input = KivyTextInput(
+                text=default_name,
+                multiline=False,
+                size_hint_y=None,
+                height=dp(44),
+                font_size=dp(14),
+                foreground_color=hex_rgba(FG),
+                background_color=hex_rgba(BG_INPUT),
+                cursor_color=hex_rgba(PRIMARY),
+                padding=(dp(10), dp(10)),
+            )
+            root.add_widget(self.name_input)
+
+        self.scroll = ScrollView(do_scroll_x=False)
+        self.items_box = KivyBoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            spacing=dp(5),
+        )
+        self.items_box.bind(minimum_height=self.items_box.setter("height"))
+        self.scroll.add_widget(self.items_box)
+        root.add_widget(self.scroll)
+
+        bottom = KivyBoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(46),
+            spacing=dp(8),
+        )
+        self.choose_button = self._make_button(
+            "Select this folder" if mode in ("input_folder", "output_folder")
+            else "Save here" if mode == "save" else "Close",
+            self._choose_current,
+            width=None,
+        )
+        self.cancel_button = self._make_button(
+            "Cancel", self.close, width=None, muted=True
+        )
+        if mode == "file":
+            self.choose_button.text = "Close"
+            self.choose_button.bind(on_release=lambda *_: self.close())
+        bottom.add_widget(self.choose_button)
+        bottom.add_widget(self.cancel_button)
+        root.add_widget(bottom)
+        self.modal.add_widget(root)
+
+    def _make_button(self, text, callback, width=None, muted=False):
+        button = KivyButton(
+            text=text,
+            size_hint_x=1 if width is None else None,
+            width=dp(width) if width else 0,
+            size_hint_y=None,
+            height=dp(42),
+            background_normal="",
+            background_color=hex_rgba(BORDER_STRONG if muted else PRIMARY),
+            color=hex_rgba(FG),
+            font_size=dp(12),
+        )
+        button.bind(on_release=lambda *_: callback())
+        return button
+
+    def open(self):
+        self.modal.open()
+        self._refresh()
+
+    def close(self):
+        if self.modal is not None:
+            self.modal.dismiss()
+            self.modal = None
+
+    def _set_loading(self, message):
+        self._loading = True
+        self.items_box.clear_widgets()
+        self.items_box.add_widget(KivyLabel(
+            text=message,
+            size_hint_y=None,
+            height=dp(48),
+            color=hex_rgba(FG_DIM),
+            font_size=dp(13),
+        ))
+
+    def _refresh(self):
+        if self._loading or self.modal is None:
+            return
+        self._set_loading("Loading folder…")
+        self.path_label.text = " / ".join(self.path_names)
+        self.up_button.disabled = len(self.path_names) <= 1
+        self.refresh_button.disabled = True
+        threading.Thread(
+            target=self._list_worker,
+            args=(self.current_id,),
+            daemon=True,
+        ).start()
+
+    def _list_worker(self, document_id):
+        try:
+            items = self.storage.list_children(document_id)
+            Clock.schedule_once(lambda _dt: self._show_items(items), 0)
+        except Exception as exc:
+            Clock.schedule_once(lambda _dt: self._show_error(str(exc)), 0)
+
+    @mainthread
+    def _show_items(self, items):
+        if self.modal is None:
+            return
+        self._loading = False
+        self.refresh_button.disabled = False
+        self.items_box.clear_widgets()
+        directories = [item for item in items if item[2] == self.storage.directory_mime]
+        files = [item for item in items if item[2] != self.storage.directory_mime]
+        directories.sort(key=lambda item: item[1].lower())
+        files.sort(key=lambda item: item[1].lower())
+        if self.mode == "file":
+            files = [item for item in files
+                     if item[1].lower().endswith(self.IMAGE_EXTENSIONS)]
+        for doc_id, name, mime_type in directories:
+            button = KivyButton(
+                text="Folder   " + name,
+                size_hint_y=None,
+                height=dp(46),
+                halign="left",
+                background_normal="",
+                background_color=hex_rgba(BG_INPUT),
+                color=hex_rgba(FG),
+                font_size=dp(13),
+            )
+            button.bind(on_release=lambda _btn, i=doc_id, n=name:
+                        self._enter_folder(i, n))
+            self.items_box.add_widget(button)
+        for doc_id, name, mime_type in files:
+            button = KivyButton(
+                text=("Image   " if self.mode == "file" else "File   ") + name,
+                size_hint_y=None,
+                height=dp(44),
+                halign="left",
+                background_normal="",
+                background_color=hex_rgba(BG_CARD),
+                color=hex_rgba(FG_DIM),
+                font_size=dp(12),
+            )
+            button.bind(on_release=lambda _btn, i=doc_id, n=name:
+                        self._choose_file(i, n))
+            if self.mode == "file":
+                self.items_box.add_widget(button)
+        if not self.items_box.children:
+            self.items_box.add_widget(KivyLabel(
+                text="No matching items in this folder.",
+                size_hint_y=None,
+                height=dp(48),
+                color=hex_rgba(FG_MUTED),
+                font_size=dp(12),
+            ))
+
+    @mainthread
+    def _show_error(self, message):
+        if self.modal is None:
+            return
+        self._loading = False
+        self.refresh_button.disabled = False
+        self.items_box.clear_widgets()
+        self.items_box.add_widget(KivyLabel(
+            text="Could not read this folder:\n" + message[:500],
+            size_hint_y=None,
+            height=dp(100),
+            color=hex_rgba(RED),
+            font_size=dp(12),
+        ))
+
+    def _enter_folder(self, document_id, name):
+        if self._loading:
+            return
+        self.current_id = document_id
+        self.path_names.append(name)
+        self._refresh()
+
+    def _go_up(self):
+        if self._loading or len(self.path_names) <= 1:
+            return
+        self.path_names.pop()
+        self.current_id = (
+            self.storage.root_document_id if len(self.path_names) == 1
+            else self._document_stack[-1]
+        )
+        if hasattr(self, "_document_stack") and self._document_stack:
+            self._document_stack.pop()
+        self._refresh()
+
+    def _choose_current(self):
+        if self._loading:
+            return
+        if self.mode == "file":
+            self.close()
+            return
+        if self.mode == "save":
+            name = (self.name_input.text or "recolored.png").strip()
+            if not name:
+                name = "recolored.png"
+            if not name.lower().endswith(".png"):
+                name += ".png"
+            self._run_action(
+                "Creating file…",
+                lambda: self.storage.create_save_file(
+                    self.current_id, name
+                ),
+            )
+        elif self.mode == "output_folder":
+            self._run_action(
+                "Preparing output folder…",
+                lambda: self.storage.create_output_folder(self.current_id),
+            )
+        else:
+            self._run_action(
+                "Reading selected folder…",
+                lambda: self.storage.copy_input_folder(self.current_id),
+            )
+
+    def _choose_file(self, document_id, name):
+        if self._loading or self.mode != "file":
+            return
+        self._run_action(
+            "Copying selected image…",
+            lambda: self.storage.copy_selected_file(document_id, name),
+        )
+
+    def _run_action(self, status, action):
+        self._set_loading(status)
+        self.app_ref.set_status(status, YELLOW)
+
+        def worker():
+            try:
+                result = action()
+                Clock.schedule_once(lambda _dt: self._action_done(result), 0)
+            except Exception as exc:
+                Clock.schedule_once(lambda _dt: self._show_error(str(exc)), 0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @mainthread
+    def _action_done(self, result):
+        if self.modal is None:
+            return
+        callback = self.callback
+        self.close()
+        callback(result)
 
 
 # ============================================================================
@@ -1349,6 +1668,50 @@ class RadarApp(MDApp):
                 0.2)
 
         return root
+
+    def open_file_browser(self, mode, callback, default_name="recolored.png"):
+        if not ANDROID or self.storage is None:
+            self.show_dialog(
+                "File browser unavailable",
+                "Android storage access is not initialized."
+            )
+            return
+
+        def ready(success):
+            if not success:
+                self.set_status("Storage permission cancelled", YELLOW)
+                return
+            browser = InAppFileBrowser(
+                self, mode, callback, default_name=default_name
+            )
+            browser.open()
+
+        self.storage.ensure_root_access(ready)
+
+    def on_start(self):
+        if ANDROID:
+            Clock.schedule_once(lambda _dt: self._apply_immersive_mode(), 0.5)
+
+    def on_resume(self):
+        if ANDROID:
+            Clock.schedule_once(lambda _dt: self._apply_immersive_mode(), 0.3)
+
+    def _apply_immersive_mode(self):
+        try:
+            from jnius import autoclass
+            View = autoclass("android.view.View")
+            Activity = autoclass("org.kivy.android.PythonActivity")
+            activity = Activity.mActivity
+            decor = activity.getWindow().getDecorView()
+            flags = (
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            )
+            decor.setSystemUiVisibility(flags)
+        except Exception as exc:
+            self.set_status("Immersive mode unavailable", YELLOW)
 
     def set_status(self, text, color=GREEN):
         self._status_label.text = text
