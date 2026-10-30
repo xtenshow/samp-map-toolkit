@@ -221,13 +221,15 @@ class AndroidStorage:
             )
             copied += 1
         if copied:
-            self.app_ref.set_status(
-                f"Loaded {copied} radar PNG files", "#10b981"
-            )
+            message = f"Loaded {copied} radar PNG files"
+            color = "#10b981"
         else:
-            self.app_ref.set_status(
-                "No radar*.png files found in this folder", "#f59e0b"
-            )
+            message = "No radar*.png files found in this folder"
+            color = "#f59e0b"
+        Clock.schedule_once(
+            lambda _dt, msg=message, tint=color:
+                self.app_ref.set_status(msg, tint), 0
+        )
         return local_dir
 
     def create_output_folder(self, document_id):
