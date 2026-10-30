@@ -1469,20 +1469,29 @@ class InAppFileBrowser:
                         self._enter_folder(i, n))
             self.items_box.add_widget(button)
         for doc_id, name, mime_type in files:
-            button = KivyButton(
-                text=("Image   " if self.mode == "file" else "File   ") + name,
-                size_hint_y=None,
-                height=dp(44),
-                halign="left",
-                background_normal="",
-                background_color=hex_rgba(BG_CARD),
-                color=hex_rgba(FG_DIM),
-                font_size=dp(12),
-            )
-            button.bind(on_release=lambda _btn, i=doc_id, n=name:
-                        self._choose_file(i, n))
             if self.mode == "file":
+                button = KivyButton(
+                    text="Image   " + name,
+                    size_hint_y=None,
+                    height=dp(44),
+                    halign="left",
+                    background_normal="",
+                    background_color=hex_rgba(BG_CARD),
+                    color=hex_rgba(FG_DIM),
+                    font_size=dp(12),
+                )
+                button.bind(on_release=lambda _btn, i=doc_id, n=name:
+                            self._choose_file(i, n))
                 self.items_box.add_widget(button)
+            else:
+                self.items_box.add_widget(KivyLabel(
+                    text="File   " + name,
+                    size_hint_y=None,
+                    height=dp(36),
+                    halign="left",
+                    color=hex_rgba(FG_MUTED),
+                    font_size=dp(11),
+                ))
         if not self.items_box.children:
             self.items_box.add_widget(KivyLabel(
                 text="No matching items in this folder.",
