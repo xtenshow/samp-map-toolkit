@@ -1276,6 +1276,7 @@ class InAppFileBrowser:
     """Small SAF-backed browser; only the initial storage grant uses Android UI."""
 
     IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    PAGE_SIZE = 80
 
     def __init__(self, app_ref, mode, callback, default_name="recolored.png"):
         self.app_ref = app_ref
@@ -1286,6 +1287,8 @@ class InAppFileBrowser:
         self.document_stack = []
         self.path_names = ["Storage"]
         self._loading = False
+        self._all_items = []
+        self._page_index = 0
         self.modal = ModalView(
             size_hint=(0.96, 0.90),
             auto_dismiss=False,
@@ -1446,30 +1449,58 @@ class InAppFileBrowser:
             return
         self._loading = False
         self.refresh_button.disabled = False
-        self.items_box.clear_widgets()
-        directories = [item for item in items if item[2] == self.storage.directory_mime]
-        files = [item for item in items if item[2] != self.storage.directory_mime]
+        directories = [
+            item for item in items
+            if item[2] == self.storage.directory_mime
+        ]
+        files = [
+            item for item in items
+            if item[2] != self.storage.directory_mime
+        ]
         directories.sort(key=lambda item: item[1].lower())
         files.sort(key=lambda item: item[1].lower())
         if self.mode == "file":
-            files = [item for item in files
-                     if item[1].lower().endswith(self.IMAGE_EXTENSIONS)]
-        for doc_id, name, mime_type in directories:
-            button = KivyButton(
-                text="Folder   " + name,
+            files = [
+                item for item in files
+                if item[1].lower().endswith(self.IMAGE_EXTENSIONS)
+            ]
+        self._all_items = directories + files
+        self._page_index = 0
+        self._render_page()
+
+    def _render_page(self):
+        if self.modal is None:
+            return
+        self.items_box.clear_widgets()
+        total = len(self._all_items)
+        if total == 0:
+            self.items_box.add_widget(KivyLabel(
+                text="No matching items in this folder.",
                 size_hint_y=None,
-                height=dp(46),
-                halign="left",
-                background_normal="",
-                background_color=hex_rgba(BG_INPUT),
-                color=hex_rgba(FG),
-                font_size=dp(13),
-            )
-            button.bind(on_release=lambda _btn, i=doc_id, n=name:
-                        self._enter_folder(i, n))
-            self.items_box.add_widget(button)
-        for doc_id, name, mime_type in files:
-            if self.mode == "file":
+                height=dp(48),
+                color=hex_rgba(FG_MUTED),
+                font_size=dp(12),
+            ))
+            return
+
+        start = self._page_index * self.PAGE_SIZE
+        end = min(start + self.PAGE_SIZE, total)
+        for doc_id, name, mime_type in self._all_items[start:end]:
+            if mime_type == self.storage.directory_mime:
+                button = KivyButton(
+                    text="Folder   " + name,
+                    size_hint_y=None,
+                    height=dp(46),
+                    halign="left",
+                    background_normal="",
+                    background_color=hex_rgba(BG_INPUT),
+                    color=hex_rgba(FG),
+                    font_size=dp(13),
+                )
+                button.bind(on_release=lambda _btn, i=doc_id, n=name:
+                            self._enter_folder(i, n))
+                self.items_box.add_widget(button)
+            elif self.mode == "file":
                 button = KivyButton(
                     text="Image   " + name,
                     size_hint_y=None,
@@ -1492,14 +1523,40 @@ class InAppFileBrowser:
                     color=hex_rgba(FG_MUTED),
                     font_size=dp(11),
                 ))
-        if not self.items_box.children:
-            self.items_box.add_widget(KivyLabel(
-                text="No matching items in this folder.",
-                size_hint_y=None,
-                height=dp(48),
-                color=hex_rgba(FG_MUTED),
-                font_size=dp(12),
-            ))
+
+        footer = KivyBoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(42),
+            spacing=dp(6),
+        )
+        previous = self._make_button(
+            "Previous", self._previous_page, width=None, muted=True
+        )
+        previous.disabled = self._page_index <= 0
+        counter = KivyLabel(
+            text=f"{start + 1}-{end} of {total}",
+            color=hex_rgba(FG_DIM),
+            font_size=dp(11),
+        )
+        following = self._make_button(
+            "Next", self._next_page, width=None, muted=True
+        )
+        following.disabled = end >= total
+        footer.add_widget(previous)
+        footer.add_widget(counter)
+        footer.add_widget(following)
+        self.items_box.add_widget(footer)
+
+    def _previous_page(self):
+        if self._page_index > 0:
+            self._page_index -= 1
+            self._render_page()
+
+    def _next_page(self):
+        if (self._page_index + 1) * self.PAGE_SIZE < len(self._all_items):
+            self._page_index += 1
+            self._render_page()
 
     @mainthread
     def _show_error(self, message):
