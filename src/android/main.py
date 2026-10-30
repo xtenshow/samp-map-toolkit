@@ -1593,7 +1593,10 @@ class InAppFileBrowser:
                 result = action()
                 Clock.schedule_once(lambda _dt: self._action_done(result), 0)
             except Exception as exc:
-                Clock.schedule_once(lambda _dt: self._show_error(str(exc)), 0)
+                message = str(exc)
+                Clock.schedule_once(
+                    lambda _dt, msg=message: self._show_error(msg), 0
+                )
 
         threading.Thread(target=worker, daemon=True).start()
 
