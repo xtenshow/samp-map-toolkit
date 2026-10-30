@@ -1000,8 +1000,9 @@ class ColorItem(BaseToolItem):
                 lambda _dt: self._apply_loaded_image(path, full_image, preview), 0
             )
         except Exception as exc:
+            message = str(exc)
             Clock.schedule_once(
-                lambda _dt: self._image_load_failed(str(exc)), 0
+                lambda _dt, msg=message: self._image_load_failed(msg), 0
             )
 
     @mainthread
@@ -1282,6 +1283,7 @@ class InAppFileBrowser:
         self.mode = mode
         self.callback = callback
         self.current_id = self.storage.root_document_id
+        self.document_stack = []
         self.path_names = ["Storage"]
         self._loading = False
         self.modal = ModalView(
@@ -1429,7 +1431,8 @@ class InAppFileBrowser:
             items = self.storage.list_children(document_id)
             Clock.schedule_once(lambda _dt: self._show_items(items), 0)
         except Exception as exc:
-            Clock.schedule_once(lambda _dt: self._show_error(str(exc)), 0)
+            message = str(exc)
+            Clock.schedule_once(lambda _dt, msg=message: self._show_error(msg), 0)
 
     @mainthread
     def _show_items(self, items):
@@ -1501,6 +1504,7 @@ class InAppFileBrowser:
     def _enter_folder(self, document_id, name):
         if self._loading:
             return
+        self.document_stack.append(self.current_id)
         self.current_id = document_id
         self.path_names.append(name)
         self._refresh()
@@ -1509,12 +1513,7 @@ class InAppFileBrowser:
         if self._loading or len(self.path_names) <= 1:
             return
         self.path_names.pop()
-        self.current_id = (
-            self.storage.root_document_id if len(self.path_names) == 1
-            else self._document_stack[-1]
-        )
-        if hasattr(self, "_document_stack") and self._document_stack:
-            self._document_stack.pop()
+        self.current_id = self.document_stack.pop()
         self._refresh()
 
     def _choose_current(self):
