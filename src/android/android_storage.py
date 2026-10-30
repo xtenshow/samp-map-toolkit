@@ -144,12 +144,13 @@ class AndroidStorage:
         name = os.path.basename(name)
         return "selected_file" if name in ("", ".", "..") else name
 
-    def list_children(self, document_id):
+    def list_children(self, document_id, tree_uri=None):
         """Return direct child metadata for the in-app browser."""
-        if self.tree_uri is None:
+        tree_uri = tree_uri or self.tree_uri
+        if tree_uri is None:
             raise RuntimeError("Choose a storage folder before browsing.")
         children_uri = self.DocumentsContract.buildChildDocumentsUriUsingTree(
-            self.tree_uri, str(document_id)
+            tree_uri, str(document_id)
         )
         columns = [
             self.Document.COLUMN_DOCUMENT_ID,
@@ -187,9 +188,9 @@ class AndroidStorage:
             cursor.close()
         return items
 
-    def _document_uri(self, document_id):
+    def _document_uri(self, document_id, tree_uri=None):
         return self.DocumentsContract.buildDocumentUriUsingTree(
-            self.tree_uri, str(document_id)
+            tree_uri or self.tree_uri, str(document_id)
         )
 
     def copy_selected_file(self, document_id, display_name):
@@ -287,16 +288,20 @@ class AndroidStorage:
         finally:
             stream.close()
 
-    def _delete_existing_child(self, parent_document_id, name, existing=None):
+    def _delete_existing_child(
+        self, parent_document_id, name, existing=None, tree_uri=None
+    ):
         if existing is None:
             existing = {
                 item[1]: item[0]
-                for item in self.list_children(parent_document_id)
+                for item in self.list_children(
+                    parent_document_id, tree_uri=tree_uri
+                )
             }
         document_id = existing.get(name)
         if document_id is None:
             return
-        document_uri = self._document_uri(document_id)
+        document_uri = self._document_uri(document_id, tree_uri=tree_uri)
         deleted = self.DocumentsContract.deleteDocument(
             self.resolver, document_uri
         )
@@ -325,15 +330,18 @@ class AndroidStorage:
         finally:
             stream.close()
 
-    def _write_file_to_tree(self, parent_document_id, local_path, existing):
+    def _write_file_to_tree(
+        self, parent_document_id, local_path, existing, tree_uri=None
+    ):
         filename = self._safe_name(os.path.basename(local_path))
         mime_type = mimetypes.guess_type(filename)[0] or (
             "application/octet-stream"
         )
         self._delete_existing_child(
-            parent_document_id, filename, existing=existing
+            parent_document_id, filename, existing=existing,
+            tree_uri=tree_uri
         )
-        parent_uri = self._document_uri(parent_document_id)
+        parent_uri = self._document_uri(parent_document_id, tree_uri=tree_uri)
         target_uri = self.DocumentsContract.createDocument(
             self.resolver, parent_uri, mime_type, filename
         )
@@ -366,10 +374,14 @@ class AndroidStorage:
             return 0
 
         # One SAF directory query per export instead of one query per file.
-        children = self.list_children(parent_document_id)
+        children = self.list_children(
+            parent_document_id, tree_uri=tree_uri
+        )
         existing = {name: doc_id for doc_id, name, _mime in children}
         for path in files:
-            self._write_file_to_tree(parent_document_id, path, existing)
+            self._write_file_to_tree(
+                parent_document_id, path, existing, tree_uri=tree_uri
+            )
         return len(files)
 
     def export_file_if_needed(self, local_path):
