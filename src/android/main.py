@@ -1326,8 +1326,12 @@ class InAppFileBrowser:
         )
         self.up_button = self._make_button("Up", self._go_up, width=None)
         self.refresh_button = self._make_button("Refresh", self._refresh, width=None)
+        self.change_button = self._make_button(
+            "Change root", self._change_root, width=None
+        )
         toolbar.add_widget(self.up_button)
         toolbar.add_widget(self.refresh_button)
+        toolbar.add_widget(self.change_button)
         root.add_widget(toolbar)
 
         self.name_input = None
@@ -1379,17 +1383,19 @@ class InAppFileBrowser:
         self.modal.add_widget(root)
 
     def _make_button(self, text, callback, width=None, muted=False):
-        button = KivyButton(
-            text=text,
-            size_hint_x=1 if width is None else None,
-            width=dp(width) if width else 0,
-            size_hint_y=None,
-            height=dp(42),
-            background_normal="",
-            background_color=hex_rgba(BORDER_STRONG if muted else PRIMARY),
-            color=hex_rgba(FG),
-            font_size=dp(12),
-        )
+        options = {
+            "text": text,
+            "size_hint_x": 1 if width is None else None,
+            "size_hint_y": None,
+            "height": dp(42),
+            "background_normal": "",
+            "background_color": hex_rgba(BORDER_STRONG if muted else PRIMARY),
+            "color": hex_rgba(FG),
+            "font_size": dp(12),
+        }
+        if width is not None:
+            options["width"] = dp(width)
+        button = KivyButton(**options)
         button.bind(on_release=lambda *_: callback())
         return button
 
@@ -1500,6 +1506,22 @@ class InAppFileBrowser:
             color=hex_rgba(RED),
             font_size=dp(12),
         ))
+
+    def _change_root(self):
+        if self._loading:
+            return
+        self.close()
+
+        def changed(success):
+            if success:
+                self.app_ref.open_file_browser(
+                    self.mode, self.callback,
+                    default_name=(self.name_input.text
+                                  if self.name_input is not None
+                                  else "recolored.png"),
+                )
+
+        self.storage.pick_root(changed)
 
     def _enter_folder(self, document_id, name):
         if self._loading:
