@@ -17,6 +17,7 @@ const SAMPLE_WINDOW: usize = 8;
 #[derive(Clone, Copy)]
 struct Settings {
     enabled: bool,
+    show_overlay: bool,
     key: u16,
     target: f32,
     min_quality: f32,
@@ -73,6 +74,7 @@ impl Settings {
         if min_q >= max_q { if min_q >= 95.0 { min_q=95.0; max_q=100.0; } else { max_q=min_q+5.0; } }
         Self {
             enabled: boolean(&text, "dynamic_lod_enabled", false),
+            show_overlay: boolean(&text, "dynamic_lod_show_overlay", true),
             key: key_code(&text),
             target: number(&text, "dynamic_lod_target_fps", 60.0, 1.0, 1000.0),
             min_quality: min_q, max_quality: max_q,
@@ -117,6 +119,24 @@ pub fn initialize() {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct OverlayStatus {
+    pub enabled: bool,
+    pub fps: Option<f32>,
+    pub target: f32,
+}
+
+pub fn overlay_status() -> Option<OverlayStatus> {
+    let lock = STATE.get()?;
+    let s = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if !s.settings.show_overlay { return None; }
+    Some(OverlayStatus {
+        enabled: s.enabled,
+        fps: if s.history.is_empty() { None } else { Some(s.smooth_fps) },
+        target: s.settings.target,
+    })
+}
+
 pub fn on_frame() {
     if !game::is_supported_executable() { return; }
     let Some(lock) = STATE.get() else { return };
@@ -134,6 +154,7 @@ pub fn on_frame() {
             s.settings.target = refreshed.target;
             config::log(&format!("DynamicLOD target FPS changed to {:.0}", refreshed.target));
         }
+        s.settings.show_overlay = refreshed.show_overlay;
         s.last_target_reload = now;
     }
 
