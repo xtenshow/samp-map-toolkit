@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::RGNDATA;
 use windows::Win32::System::LibraryLoader::LoadLibraryA;
 use windows::core::{Interface, s};
 
-use crate::{benchmark, borderless, config, dynlod, game, menu, renderer};
+use crate::{benchmark, borderless, config, dynlod, game, menu, overlay, renderer};
 
 type Direct3DCreate9Fn = unsafe extern "system" fn(u32) -> *mut c_void;
 type CreateDeviceFn = unsafe extern "system" fn(
@@ -954,13 +954,18 @@ unsafe extern "system" fn end_scene_hook(device: *mut c_void) -> i32 {
     }
 
     POST_PROCESS_ACTIVE.with(|active| active.set(true));
-    if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }
-        && let Err(error) = renderer::process_frame(device_reference)
-    {
-        config::log(&format!("Post-process failed: {error}"));
+    if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) } {
+        if let Err(error) = renderer::process_frame(device_reference) {
+            config::log(&format!("Post-process failed: {error}"));
+        }
+        dynlod::on_frame();
+        if let Err(error) = overlay::draw(device_reference) {
+            config::log(&format!("Diagnostic overlay failed: {error}"));
+        }
+    } else {
+        dynlod::on_frame();
     }
     POST_PROCESS_ACTIVE.with(|active| active.set(false));
-    dynlod::on_frame();
     result
 }
 
