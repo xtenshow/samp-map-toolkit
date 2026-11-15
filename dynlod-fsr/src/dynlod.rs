@@ -132,7 +132,8 @@ pub fn on_frame() {
     if elapsed >= Duration::from_millis(s.settings.sample_ms) {
         s.smooth_fps = s.frames as f32 / elapsed.as_secs_f32().max(0.001);
         s.frames = 0; s.sample_start = now;
-        s.history.push(s.smooth_fps);
+        let sampled_fps = s.smooth_fps;
+        s.history.push(sampled_fps);
         if s.history.len() > SAMPLE_WINDOW { s.history.remove(0); }
         let mut weighted = 0.0; let mut weights = 0.0;
         for (i, fps) in s.history.iter().enumerate() {
