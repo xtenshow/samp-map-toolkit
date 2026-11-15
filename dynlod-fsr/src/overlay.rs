@@ -85,11 +85,11 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
         }
         unsafe { device.SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1.0 as u32) }
             .map_err(|e| format!("Overlay set color operation: {e}"))?;
-        unsafe { device.SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE.0 as u32) }
+        unsafe { device.SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE) }
             .map_err(|e| format!("Overlay set color argument: {e}"))?;
         unsafe { device.SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32) }
             .map_err(|e| format!("Overlay set alpha operation: {e}"))?;
-        unsafe { device.SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE.0 as u32) }
+        unsafe { device.SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE) }
             .map_err(|e| format!("Overlay set alpha argument: {e}"))?;
         unsafe {
             device.DrawPrimitiveUP(
