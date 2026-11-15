@@ -3,6 +3,7 @@
 - One 32-bit ASI output: `gta_sa_fsr.asi`.
 - FSR 1 world upscaling remains controlled through GTA's Advanced Display FSR menu.
 - DynamicLOD is disabled by default and toggles with **F11**.
+- Set `dynamic_lod_target_fps` in `gta_sa_fsr.ini` to any target (for example 75, 90, 120, or 144). This is a target, not an FPS cap. The controller adapts FSR render scale around it, and detects edits to this value live without restarting GTA.
 - The adaptive controller samples FPS, applies hysteresis and asymmetric response/recovery,
   then changes FSR's custom render scale gradually.
 - Far-clip and LOD distances use the same adaptive quality multiplier.
