@@ -92,6 +92,8 @@ struct State {
     history: Vec<f32>, smooth_fps: f32, quality: f32, multiplier: f32,
     base_quality: QualityPreset, base_scale: f32, base_effective: f32,
     applied_scale: Option<f32>, last_rebuild: Instant,
+    last_target_reload: Instant,
+    original_far_clip: Option<f32>, original_lod_distance: Option<f32>,
 }
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 
@@ -105,7 +107,8 @@ pub fn initialize() {
         smooth_fps: 0.0, quality: settings.max_quality, multiplier: 1.0,
         base_quality: cfg.quality, base_scale: cfg.render_scale,
         base_effective: cfg.effective_render_scale(), applied_scale: None,
-        last_rebuild: now,
+        last_rebuild: now, last_target_reload: now,
+        original_far_clip: None, original_lod_distance: None,
     }));
     if game::is_supported_executable() {
         config::log("DynamicLOD controller initialized inside the FSR ASI");
@@ -122,6 +125,17 @@ pub fn on_frame() {
     let down = unsafe { GetAsyncKeyState(s.settings.key as i32) } < 0;
     if down && !s.last_key { toggle(&mut s, now); }
     s.last_key = down;
+
+    // Refresh the target FPS from the INI while the game is running.
+    // This allows changing dynamic_lod_target_fps without restarting GTA.
+    if now.saturating_duration_since(s.last_target_reload) >= Duration::from_secs(1) {
+        let refreshed = Settings::load();
+        if (refreshed.target - s.settings.target).abs() >= 0.1 {
+            s.settings.target = refreshed.target;
+            config::log(&format!("DynamicLOD target FPS changed to {:.0}", refreshed.target));
+        }
+        s.last_target_reload = now;
+    }
 
     if !game::world_render_stable() {
         s.frames = 0; s.sample_start = now; s.history.clear(); s.smooth_fps = 0.0;
@@ -154,8 +168,12 @@ fn toggle(s: &mut State, now: Instant) {
             let _ = config::set_render_scale(s.base_scale, false);
             renderer::request_quality_rebuild();
         }
-        config::log("DynamicLOD disabled; FSR baseline restored");
+        if let Some(value) = s.original_far_clip.take() { write_float(FAR_CLIP, value); }
+        if let Some(value) = s.original_lod_distance.take() { write_float(LOD_DISTANCE, value); }
+        config::log("DynamicLOD disabled; FSR and draw-distance baselines restored");
     } else {
+        s.original_far_clip = read_float(FAR_CLIP);
+        s.original_lod_distance = read_float(LOD_DISTANCE);
         let current = config::get();
         s.base_quality = current.quality; s.base_scale = current.render_scale;
         s.base_effective = current.effective_render_scale();
@@ -212,9 +230,19 @@ fn update_controller(s: &mut State, now: Instant) {
     }
 }
 fn apply_distances(s: &State) {
-    let m = if s.enabled { s.multiplier } else { 1.0 };
-    write_float(FAR_CLIP, (s.settings.far_clip * m).clamp(0.0, 3600.0));
-    write_float(LOD_DISTANCE, (s.settings.lod_distance * m).clamp(0.0, 1000.0));
+    // Never touch GTA's draw-distance values while DynamicLOD is disabled.
+    if !s.enabled { return; }
+    let m = s.multiplier;
+    if let Some(base) = s.original_far_clip {
+        write_float(FAR_CLIP, (base * m).clamp(0.0, 3600.0));
+    }
+    if let Some(base) = s.original_lod_distance {
+        write_float(LOD_DISTANCE, (base * m).clamp(0.0, 1000.0));
+    }
+}
+fn read_float(address: usize) -> Option<f32> {
+    let value = unsafe { std::ptr::read_volatile(address as *const f32) };
+    value.is_finite().then_some(value)
 }
 fn write_float(address: usize, value: f32) {
     if !value.is_finite() { return; }
