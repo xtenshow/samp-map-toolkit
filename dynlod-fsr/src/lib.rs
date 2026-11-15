@@ -7,6 +7,7 @@ mod dynlod;
 mod game;
 mod hooks;
 mod menu;
+mod overlay;
 mod renderer;
 mod shaders;
 
