@@ -1,0 +1,44 @@
+[tasks.build-asi]
+description = "Build the GTA San Andreas FSR ASI plugin."
+command = "cargo"
+args = ["build", "--release", "--locked", "--target", "i686-pc-windows-msvc"]
+
+[tasks.package-asi]
+description = "Build and package the ASI plugin."
+dependencies = ["build-asi"]
+command = "powershell"
+args = [
+    "-NoProfile",
+    "-Command",
+    '''
+$ErrorActionPreference = "Stop"
+
+$project = $env:CARGO_MAKE_WORKING_DIRECTORY
+$dist = Join-Path $project "dist"
+$release = Join-Path $env:CARGO_MAKE_CRATE_CUSTOM_TRIPLE_TARGET_DIRECTORY "release"
+
+$files = [ordered]@{
+    (Join-Path $release "gta_sa_fsr.dll") = (Join-Path $dist "gta_sa_fsr.asi")
+    (Join-Path $project "gta_sa_fsr.ini") = (Join-Path $dist "gta_sa_fsr.ini")
+    (Join-Path $project "README.md") = (Join-Path $dist "README.md")
+    (Join-Path $project "THIRD_PARTY_NOTICES.md") = (Join-Path $dist "THIRD_PARTY_NOTICES.md")
+}
+
+foreach ($source in $files.Keys) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "Package input not found: $source"
+    }
+}
+
+New-Item -ItemType Directory -Path $dist -Force | Out-Null
+
+foreach ($source in $files.Keys) {
+    Copy-Item -LiteralPath $source -Destination $files[$source] -Force -ErrorAction Stop
+}
+
+Write-Host "Package created in $dist"
+''',
+]
+
+[tasks.default]
+alias = "package-asi"

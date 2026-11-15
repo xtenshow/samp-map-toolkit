@@ -1,0 +1,56 @@
+name: Build DynLOD + FSR ASI
+on:
+  push:
+    branches: [dynlod-fsr-build]
+    paths:
+      - 'dynlod-fsr/**'
+      - '.github/workflows/dynlod-fsr-build.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build 32-bit GTA San Andreas ASI
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install Rust and 32-bit MSVC target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+      - name: Show toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          rustup target list --installed
+      - name: Run unit tests
+        working-directory: dynlod-fsr
+        run: cargo test --locked --target i686-pc-windows-msvc
+      - name: Build release plugin
+        working-directory: dynlod-fsr
+        run: cargo build --release --locked --target i686-pc-windows-msvc
+      - name: Package ASI and configuration
+        working-directory: dynlod-fsr
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $binary = 'target/i686-pc-windows-msvc/release/gta_sa_fsr.dll'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Build output not found: $binary" }
+          Copy-Item -LiteralPath $binary -Destination 'dist/gta_sa_fsr.asi' -Force
+          Copy-Item -LiteralPath 'gta_sa_fsr.ini' -Destination 'dist/gta_sa_fsr.ini' -Force
+          Copy-Item -LiteralPath 'README_INTEGRATION.md' -Destination 'dist/README.md' -Force
+          Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.md' -Destination 'dist/THIRD_PARTY_NOTICES.md' -Force
+          Get-ChildItem dist | Format-Table Name, Length
+      - name: Upload installable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: DynLOD-FSR-ASI
+          path: |
+            dynlod-fsr/dist/gta_sa_fsr.asi
+            dynlod-fsr/dist/gta_sa_fsr.ini
+            dynlod-fsr/dist/README.md
+            dynlod-fsr/dist/THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+          retention-days: 30
