@@ -108,6 +108,24 @@ pub fn world_render_dimensions() -> Option<(u32, u32)> {
     })
 }
 
+/// Returns the low-resolution world targets only while they are actively used.
+pub fn active_world_render_dimensions() -> Option<(u32, u32, u32, u32)> {
+    RENDERER.with(|renderer| {
+        let renderer = renderer.borrow();
+        if renderer.disabled
+            || !config::get().enabled
+            || !renderer.world_effect_enabled
+            || !renderer.outer_world_stable
+            || renderer.world_stable_frames < 30
+        {
+            return None;
+        }
+        renderer.world_resources.as_ref().map(|resources| (
+            resources.width, resources.height, resources.output_width, resources.output_height
+        ))
+    })
+}
+
 pub fn rebind_world_after_camera_update(device: &IDirect3DDevice9) -> Result<(), String> {
     RENDERER.with(|renderer| {
         renderer
