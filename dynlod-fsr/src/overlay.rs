@@ -15,7 +15,6 @@ struct Vertex {
 }
 
 pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
-    let Some(status) = dynlod::overlay_status() else { return Ok(()); };
     let back_buffer = unsafe { device.GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO) }
         .map_err(|e| format!("Overlay get backbuffer: {e}"))?;
     let mut desc = D3DSURFACE_DESC::default();
@@ -25,32 +24,52 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
     let output_height = desc.Height;
     if output_width == 0 || output_height == 0 { return Ok(()); }
 
-    let active = renderer::active_world_render_dimensions();
-    let (render_width, render_height, fsr_active) = match active {
-        Some((w, h, _, _)) => (w, h, true),
-        None => (output_width, output_height, false),
-    };
-    let scale = if fsr_active {
-        ((render_width as f32 / output_width as f32)
-            .min(render_height as f32 / output_height as f32) * 100.0).round() as u32
-    } else { 100 };
-    let fps = status.fps.map(|v| format!("{v:.0}")).unwrap_or_else(|| "--".to_owned());
-    let line1 = format!("DYNLOD {} FPS {} TARGET {}", if status.enabled { "ON" } else { "OFF" }, fps, status.target.round() as u32);
-    let line2 = format!("RENDER {}X{} OUT {}X{}", render_width, render_height, output_width, output_height);
-    let line3 = format!("FSR {} SCALE {}%", if fsr_active { "ON" } else { "OFF" }, scale);
+    // The SA-MP menu receives input and gets painted on the same final frame.
+    crate::dyn_menu::on_frame(output_width, output_height);
+    let menu_view = crate::dyn_menu::view();
+    let status = dynlod::overlay_status();
+    if status.is_none() && menu_view.is_none() { return Ok(()); }
 
-    let pixel = (output_width / 900).clamp(1, 3) as f32;
-    let pad = 8.0 * pixel;
-    let row_height = 7.0 * pixel;
-    let row_gap = 3.0 * pixel;
-    let lines = [&line1, &line2, &line3];
-    let max_chars = lines.iter().map(|x| x.len()).max().unwrap_or(0);
-    let panel_width = pad * 2.0 + max_chars as f32 * 6.0 * pixel;
-    let panel_height = pad * 2.0 + row_height * 3.0 + row_gap * 2.0;
-    let mut vertices = Vec::with_capacity(6 * (1 + lines.iter().map(|x| x.len() * 35).sum::<usize>()));
-    rect(&mut vertices, 14.0, 14.0, 14.0 + panel_width, 14.0 + panel_height, 0xD018202C);
-    for (i, line) in lines.iter().enumerate() {
-        text(&mut vertices, line, 14.0 + pad, 14.0 + pad + i as f32 * (row_height + row_gap), pixel, 0xFFF0F4FA);
+    let mut vertices = Vec::with_capacity(48_000);
+    if let Some(status) = status {
+        let active = renderer::active_world_render_dimensions();
+        let (render_width, render_height, fsr_active) = match active {
+            Some((w, h, _, _)) => (w, h, true),
+            None => (output_width, output_height, false),
+        };
+        let scale = if fsr_active {
+            ((render_width as f32 / output_width as f32)
+                .min(render_height as f32 / output_height as f32) * 100.0).round() as u32
+        } else { 100 };
+        let fmt = |value: Option<f32>| value.map(|v| format!("{v:.0}")).unwrap_or_else(|| "N/A".to_owned());
+        let fps = fmt(status.fps);
+        let avg = fmt(status.avg_fps);
+        let cpu = status.cpu_pct.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "N/A".to_owned());
+        let gpu = status.gpu_pct.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "N/A".to_owned());
+        let ram = status.ram_mb.map(|v| format!("{v}MB")).unwrap_or_else(|| "N/A".to_owned());
+
+        let lines = [
+            format!("DYNLOD {} FPS {} TARGET {}", if status.enabled { "ON" } else { "OFF" }, fps, status.target.round() as u32),
+            format!("AVG FPS {} CPU {}", avg, cpu),
+            format!("RAM {} GPU {}", ram, gpu),
+            format!("RENDER {}X{} OUT {}X{}", render_width, render_height, output_width, output_height),
+            format!("FSR {} SCALE {}%", if fsr_active { "ON" } else { "OFF" }, scale),
+        ];
+        let pixel = (output_width / 900).clamp(1, 3) as f32;
+        let pad = 8.0 * pixel;
+        let row_height = 7.0 * pixel;
+        let row_gap = 3.0 * pixel;
+        let max_chars = lines.iter().map(|x| x.len()).max().unwrap_or(0);
+        let panel_width = pad * 2.0 + max_chars as f32 * 6.0 * pixel;
+        let panel_height = pad * 2.0 + row_height * lines.len() as f32 + row_gap * (lines.len() - 1) as f32;
+        rect(&mut vertices, 14.0, 14.0, 14.0 + panel_width, 14.0 + panel_height, 0xD018202C);
+        for (i, line) in lines.iter().enumerate() {
+            text(&mut vertices, line, 14.0 + pad, 14.0 + pad + i as f32 * (row_height + row_gap), pixel, 0xFFF0F4FA);
+        }
+    }
+
+    if let Some(view) = menu_view {
+        draw_menu(&mut vertices, &view, output_width, output_height);
     }
     if vertices.is_empty() { return Ok(()); }
 
@@ -112,6 +131,40 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
     Ok(())
 }
 
+fn draw_menu(
+    vertices: &mut Vec<Vertex>,
+    view: &crate::dyn_menu::MenuView,
+    output_width: u32,
+    output_height: u32,
+) {
+    let scale = (output_width as f32 / 1280.0).clamp(0.75, 1.8);
+    let panel_width = 600.0 * scale;
+    let panel_height = (112.0 + view.rows.len() as f32 * 28.0) * scale;
+    let left = (output_width as f32 - panel_width) * 0.5;
+    let top = (output_height as f32 - panel_height) * 0.5;
+    rect(vertices, left, top, left + panel_width, top + panel_height, 0xEA101923);
+    rect(vertices, left, top, left + panel_width, top + 3.0 * scale, 0xFF36A6E8);
+    text(vertices, &view.title, left + 20.0 * scale, top + 17.0 * scale, 1.8 * scale, 0xFF63C5FF);
+    text(vertices, &view.description, left + 20.0 * scale, top + 52.0 * scale, 1.0 * scale, 0xFFB5C7D8);
+
+    let row_top = top + 96.0 * scale;
+    let row_height = 28.0 * scale;
+    for (index, row) in view.rows.iter().enumerate() {
+        let y = row_top + index as f32 * row_height;
+        if index == view.selected {
+            rect(vertices, left + 12.0 * scale, y - 4.0 * scale, left + panel_width - 12.0 * scale, y + 21.0 * scale, 0xAA245A7A);
+        }
+        text(
+            vertices,
+            row,
+            left + 24.0 * scale,
+            y,
+            1.25 * scale,
+            if index == view.selected { 0xFFFFFFFF } else { 0xFFE2EAF2 },
+        );
+    }
+}
+
 fn rect(out: &mut Vec<Vertex>, left: f32, top: f32, right: f32, bottom: f32, color: u32) {
     let a = Vertex { x: left - 0.5, y: top - 0.5, z: 0.0, rhw: 1.0, color };
     let b = Vertex { x: right - 0.5, y: top - 0.5, z: 0.0, rhw: 1.0, color };
@@ -158,6 +211,8 @@ fn glyph(ch: u8) -> [u8; 7] {
         b'6' => [14,16,16,30,17,17,14], b'7' => [31,1,2,4,8,8,8],
         b'8' => [14,17,17,14,17,17,14], b'9' => [14,17,17,15,1,1,14],
         b':' => [0,4,4,0,4,4,0], b'%' => [17,2,4,8,17,0,0],
+        b'/' => [1,2,2,4,8,8,16], b'-' => [0,0,0,31,0,0,0],
+        b'.' => [0,0,0,0,0,4,4],
         b' ' => [0;7], _ => [0;7],
     }
 }

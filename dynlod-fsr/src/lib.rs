@@ -4,12 +4,14 @@ mod benchmark;
 mod borderless;
 mod config;
 mod dynlod;
+mod dyn_menu;
 mod game;
 mod hooks;
 mod menu;
 mod overlay;
 mod renderer;
 mod shaders;
+mod telemetry;
 
 use core::ffi::c_void;
 

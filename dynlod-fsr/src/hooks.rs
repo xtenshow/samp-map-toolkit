@@ -813,24 +813,15 @@ unsafe fn hook_device_methods(device: *mut c_void) -> Result<(), String> {
             "Clear",
         )
     }?;
-    let (original_present, present_created) = if config::get().benchmark_enabled {
-        match unsafe {
-            create_or_get_detour(
-                present_targets(),
-                present_target,
-                present_hook as *mut c_void,
-                "Present",
-            )
-        } {
-            Ok(hook) => hook,
-            Err(error) => {
-                config::log(&format!("Benchmark Present hook unavailable: {error}"));
-                (0, false)
-            }
-        }
-    } else {
-        (0, false)
-    };
+    // Present is the single frame boundary used by the DynLOD counter and HUD.
+    let (original_present, present_created) = unsafe {
+        create_or_get_detour(
+            present_targets(),
+            present_target,
+            present_hook as *mut c_void,
+            "Present",
+        )
+    }?;
 
     device_hooks()
         .lock()
@@ -857,12 +848,9 @@ unsafe fn hook_device_methods(device: *mut c_void) -> Result<(), String> {
         unsafe { MinHook::enable_hook(clear_target as *mut c_void) }
             .map_err(|status| format!("Enable Clear detour: {status}"))?;
     }
-    if present_created
-        && let Err(status) = unsafe { MinHook::enable_hook(present_target as *mut c_void) }
-    {
-        config::log(&format!(
-            "Benchmark Present hook could not be enabled: {status}"
-        ));
+    if present_created {
+        unsafe { MinHook::enable_hook(present_target as *mut c_void) }
+            .map_err(|status| format!("Enable Present detour: {status}"))?;
     }
     config::log(&format!(
         "Device methods detoured: device={device:p}, Reset=0x{reset_target:08X}, Present=0x{present_target:08X}, EndScene=0x{end_scene_target:08X}, Clear=0x{clear_target:08X}, benchmark_present={}",
@@ -954,16 +942,10 @@ unsafe extern "system" fn end_scene_hook(device: *mut c_void) -> i32 {
     }
 
     POST_PROCESS_ACTIVE.with(|active| active.set(true));
-    if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) } {
-        if let Err(error) = renderer::process_frame(device_reference) {
-            config::log(&format!("Post-process failed: {error}"));
-        }
-        dynlod::on_frame();
-        if let Err(error) = overlay::draw(device_reference) {
-            config::log(&format!("Diagnostic overlay failed: {error}"));
-        }
-    } else {
-        dynlod::on_frame();
+    if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }
+        && let Err(error) = renderer::process_frame(device_reference)
+    {
+        config::log(&format!("Post-process failed: {error}"));
     }
     POST_PROCESS_ACTIVE.with(|active| active.set(false));
     result
@@ -980,6 +962,16 @@ unsafe extern "system" fn present_hook(
         config::log("Present called without a detour record");
         return D3DERR_INVALIDCALL;
     };
+    // Count and draw once per completed game frame, not once per EndScene.
+    POST_PROCESS_ACTIVE.with(|active| active.set(true));
+    dynlod::on_frame();
+    if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }
+        && let Err(error) = overlay::draw(device_reference)
+    {
+        config::log(&format!("Diagnostic overlay failed: {error}"));
+    }
+    POST_PROCESS_ACTIVE.with(|active| active.set(false));
+
     let original = unsafe { std::mem::transmute::<usize, PresentFn>(original_address) };
     let result = unsafe {
         original(
