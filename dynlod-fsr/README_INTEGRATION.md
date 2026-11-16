@@ -3,7 +3,7 @@
 - One 32-bit ASI output: `gta_sa_fsr.asi`.
 - FSR 1 world upscaling remains controlled through GTA's Advanced Display FSR menu.
 - DynamicLOD is disabled by default and toggles with **F11** or the SA-MP command `/dyn on` / `/dyn off`.
-- Use `/dyn` to open the rebuilt in-game menu. It has separate Controller, FSR/Render, World Distance, and HUD/Stats pages, each with a short Finglish description. Use mouse clicks, arrow keys, Enter, and Esc.
+- Use `/dyn` to open the rebuilt in-game menu. **F12 is also a fallback menu hotkey** if a particular SA-MP 0.3.7 revision prevents command registration. It has separate Controller, FSR/Render, World Distance, and HUD/Stats pages. Use mouse clicks, arrow keys, Enter, and Esc.
 - Use `/dyn hud`, `/dyn hud on`, or `/dyn hud off` to control the performance HUD.
 - The HUD shows current FPS, rolling average FPS, process CPU usage, process RAM working set, process GPU-engine utilization, actual render-target dimensions, output dimensions, and FSR scale. GPU reports N/A when Windows does not expose the process GPU counter. The 32-bit Windows build runs unit tests before packaging.
 - Set `dynamic_lod_target_fps` in `gta_sa_fsr.ini` to any target (for example 75, 90, 120, or 144). This is a target, not an FPS cap. The controller adapts FSR render scale around it, and detects edits to this value live without restarting GTA.
