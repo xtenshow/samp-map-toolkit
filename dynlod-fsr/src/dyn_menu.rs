@@ -45,6 +45,8 @@ struct MenuState {
     cursor_adjustment: i32,
     command_registered: bool,
     last_register_attempt: Instant,
+    last_register_log: Instant,
+    last_menu_hotkey: bool,
 }
 
 impl MenuState {
@@ -63,6 +65,8 @@ impl MenuState {
             cursor_adjustment: 0,
             command_registered: false,
             last_register_attempt: Instant::now() - Duration::from_secs(5),
+            last_register_log: Instant::now() - Duration::from_secs(10),
+            last_menu_hotkey: false,
         }
     }
 }
@@ -130,16 +134,20 @@ impl MenuLayout {
 }
 
 struct SampLayout {
+    name: &'static str,
     input_global: usize,
     add_command: usize,
 }
 
-const SAMP_LAYOUTS: [SampLayout; 4] = [
-    SampLayout { input_global: 0x21A0E8, add_command: 0x65AD0 }, // 0.3.7 R1
-    SampLayout { input_global: 0x26E8CC, add_command: 0x69000 }, // 0.3.7 R3-1
-    SampLayout { input_global: 0x26EB84, add_command: 0x69770 }, // 0.3.7 R5-1
-    SampLayout { input_global: 0x2ACA14, add_command: 0x691B0 }, // 0.3.DL-1
+const SAMP_LAYOUTS: [SampLayout; 5] = [
+    SampLayout { name: "0.3.7 R1", input_global: 0x21A0E8, add_command: 0x65AD0 },
+    SampLayout { name: "0.3.7 R3-1", input_global: 0x26E8CC, add_command: 0x69000 },
+    SampLayout { name: "0.3.7 R4", input_global: 0x26E9FC, add_command: 0x69730 },
+    SampLayout { name: "0.3.7 R5-1", input_global: 0x26EB84, add_command: 0x69770 },
+    SampLayout { name: "0.3.DL-1", input_global: 0x2ACA14, add_command: 0x691B0 },
 ];
+
+const MENU_HOTKEY: i32 = 0x7B; // F12 fallback when SA-MP command registration is unavailable.
 
 const MAIN_ROWS: &[&str] = &["controller", "render", "distance", "hud", "close"];
 const CONTROLLER_ROWS: &[&str] = &[
@@ -152,13 +160,40 @@ const HUD_ROWS: &[&str] = &["overlay", "back"];
 pub fn on_frame(output_width: u32, output_height: u32) {
     let mut menu = state().lock().unwrap_or_else(|e| e.into_inner());
 
+    // F12 opens the menu even when this SA-MP build has an unsupported
+    // CInput address layout or the /dyn command cannot be registered.
+    let hotkey_pressed = edge(key_down(MENU_HOTKEY), &mut menu.last_menu_hotkey);
+    if !menu.open && hotkey_pressed {
+        menu.open = true;
+        menu.page = Page::Main;
+        menu.selected = 0;
+        menu.last_mouse = key_down(0x01);
+        menu.last_enter = key_down(0x0D);
+        menu.last_escape = key_down(0x1B);
+        menu.last_up = key_down(0x26);
+        menu.last_down = key_down(0x28);
+        menu.last_left = key_down(0x25);
+        menu.last_right = key_down(0x27);
+        config::log("DynLOD menu opened with F12 fallback hotkey");
+    }
+
     if !menu.command_registered
         && menu.last_register_attempt.elapsed() >= Duration::from_secs(2)
     {
         menu.last_register_attempt = Instant::now();
-        menu.command_registered = register_command();
-        if menu.command_registered {
-            config::log("SA-MP /dyn command registered");
+        match register_command() {
+            Ok(version) => {
+                menu.command_registered = true;
+                config::log(&format!("SA-MP /dyn command registered for {version}"));
+            }
+            Err(reason) => {
+                if menu.last_register_log.elapsed() >= Duration::from_secs(10) {
+                    menu.last_register_log = Instant::now();
+                    config::log(&format!(
+                        "SA-MP /dyn registration pending: {reason}. Press F12 to open the menu."
+                    ));
+                }
+            }
         }
     }
 
@@ -501,33 +536,56 @@ fn mouse_position(output_width: u32, output_height: u32) -> Option<(f32, f32)> {
     Some((x, y))
 }
 
-fn register_command() -> bool {
-    let module = match unsafe { GetModuleHandleA(s!("samp.dll")) } {
-        Ok(module) => module,
-        Err(_) => return false,
-    };
-
+fn register_command() -> Result<&'static str, String> {
+    let module = unsafe { GetModuleHandleA(s!("samp.dll")) }
+        .map_err(|_| "samp.dll is not loaded yet".to_owned())?;
     let base = module.0 as usize;
+    let mut failures = Vec::new();
+
     for layout in SAMP_LAYOUTS {
-        let global = (base + layout.input_global) as *const *mut c_void;
-        let input = unsafe { ptr::read_unaligned(global) };
-        if input.is_null() || !readable_committed(input) {
+        let global_address = base + layout.input_global;
+        let global = global_address as *const *mut c_void;
+
+        if !readable_committed(global.cast_mut().cast()) {
+            failures.push(format!("{}: input global is not readable", layout.name));
             continue;
         }
 
-        let vtable = unsafe { ptr::read_unaligned(input.cast::<*const usize>()) as usize };
-        if vtable < base || vtable > base + 0x800000 {
+        let input = unsafe { ptr::read_unaligned(global) };
+        if input.is_null() || !readable_committed(input) {
+            failures.push(format!("{}: CInput pointer is null or unreadable", layout.name));
+            continue;
+        }
+
+        // CInput is not a polymorphic C++ class: its first member is
+        // IDirect3DDevice9* m_pDevice, NOT a vtable pointer. The previous
+        // check incorrectly expected this value to point inside samp.dll,
+        // so it rejected every valid CInput object.
+        let d3d_device = unsafe { ptr::read_unaligned(input.cast::<*mut c_void>()) };
+        if d3d_device.is_null() || !readable_committed(d3d_device) {
+            failures.push(format!("{}: CInput has no readable D3D device", layout.name));
+            continue;
+        }
+
+        let function_address = base + layout.add_command;
+        if !readable_committed(function_address as *mut c_void) {
+            failures.push(format!("{}: AddCommand function is not readable", layout.name));
             continue;
         }
 
         let add_command: AddCommandFn =
-            unsafe { std::mem::transmute(base + layout.add_command) };
-        let name = CString::new("dyn").unwrap();
+            unsafe { std::mem::transmute(function_address) };
+        let name = CString::new("dyn").expect("static command name contains no NUL");
         unsafe { add_command(input, name.as_ptr(), dyn_command) };
-        return true;
+
+        return Ok(layout.name);
     }
 
-    false
+    if failures.is_empty() {
+        Err("no supported CInput layout was checked".to_owned())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn readable_committed(address: *mut c_void) -> bool {
@@ -558,6 +616,7 @@ unsafe extern "cdecl" fn dyn_command(params: *const c_char) {
             menu.open = true;
             menu.page = Page::Main;
             menu.selected = 0;
+            menu.last_menu_hotkey = key_down(MENU_HOTKEY);
             menu.last_mouse = key_down(0x01);
             menu.last_enter = key_down(0x0D);
             menu.last_escape = key_down(0x1B);
