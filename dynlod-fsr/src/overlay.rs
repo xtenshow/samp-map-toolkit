@@ -22,13 +22,17 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
         .map_err(|e| format!("Overlay get backbuffer description: {e}"))?;
     let output_width = desc.Width;
     let output_height = desc.Height;
-    if output_width == 0 || output_height == 0 { return Ok(()); }
+    if output_width == 0 || output_height == 0 {
+        return Ok(());
+    }
 
-    // The SA-MP menu receives input and gets painted on the same final frame.
+    // Handle menu input and render it against the same back-buffer dimensions.
     crate::dyn_menu::on_frame(output_width, output_height);
     let menu_view = crate::dyn_menu::view();
     let status = dynlod::overlay_status();
-    if status.is_none() && menu_view.is_none() { return Ok(()); }
+    if status.is_none() && menu_view.is_none() {
+        return Ok(());
+    }
 
     let mut vertices = Vec::with_capacity(48_000);
     if let Some(status) = status {
@@ -39,9 +43,15 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
         };
         let scale = if fsr_active {
             ((render_width as f32 / output_width as f32)
-                .min(render_height as f32 / output_height as f32) * 100.0).round() as u32
-        } else { 100 };
-        let fmt = |value: Option<f32>| value.map(|v| format!("{v:.0}")).unwrap_or_else(|| "N/A".to_owned());
+                .min(render_height as f32 / output_height as f32)
+                * 100.0)
+                .round() as u32
+        } else {
+            100
+        };
+        let fmt = |value: Option<f32>| {
+            value.map(|v| format!("{v:.0}")).unwrap_or_else(|| "N/A".to_owned())
+        };
         let fps = fmt(status.fps);
         let avg = fmt(status.avg_fps);
         let cpu = status.cpu_pct.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "N/A".to_owned());
@@ -61,17 +71,34 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
         let row_gap = 3.0 * pixel;
         let max_chars = lines.iter().map(|x| x.len()).max().unwrap_or(0);
         let panel_width = pad * 2.0 + max_chars as f32 * 6.0 * pixel;
-        let panel_height = pad * 2.0 + row_height * lines.len() as f32 + row_gap * (lines.len() - 1) as f32;
-        rect(&mut vertices, 14.0, 14.0, 14.0 + panel_width, 14.0 + panel_height, 0xD018202C);
+        let panel_height = pad * 2.0 + row_height * lines.len() as f32
+            + row_gap * (lines.len() - 1) as f32;
+        rect(
+            &mut vertices,
+            14.0,
+            14.0,
+            14.0 + panel_width,
+            14.0 + panel_height,
+            0xD018202C,
+        );
         for (i, line) in lines.iter().enumerate() {
-            text(&mut vertices, line, 14.0 + pad, 14.0 + pad + i as f32 * (row_height + row_gap), pixel, 0xFFF0F4FA);
+            text(
+                &mut vertices,
+                line,
+                14.0 + pad,
+                14.0 + pad + i as f32 * (row_height + row_gap),
+                pixel,
+                0xFFF0F4FA,
+            );
         }
     }
 
     if let Some(view) = menu_view {
         draw_menu(&mut vertices, &view, output_width, output_height);
     }
-    if vertices.is_empty() { return Ok(()); }
+    if vertices.is_empty() {
+        return Ok(());
+    }
 
     let state = unsafe { device.CreateStateBlock(D3DSBT_ALL) }
         .map_err(|e| format!("Overlay create D3D state block: {e}"))?;
@@ -117,7 +144,8 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
                 vertices.as_ptr().cast::<std::ffi::c_void>(),
                 size_of::<Vertex>() as u32,
             )
-        }.map_err(|e| format!("Overlay DrawPrimitiveUP: {e}"))?;
+        }
+        .map_err(|e| format!("Overlay DrawPrimitiveUP: {e}"))?;
         Ok(())
     })();
 
@@ -137,32 +165,73 @@ fn draw_menu(
     output_width: u32,
     output_height: u32,
 ) {
-    let scale = (output_width as f32 / 1280.0).clamp(0.75, 1.8);
-    let panel_width = 600.0 * scale;
-    let panel_height = (112.0 + view.rows.len() as f32 * 28.0) * scale;
-    let left = (output_width as f32 - panel_width) * 0.5;
-    let top = (output_height as f32 - panel_height) * 0.5;
-    rect(vertices, left, top, left + panel_width, top + panel_height, 0xEA101923);
-    rect(vertices, left, top, left + panel_width, top + 3.0 * scale, 0xFF36A6E8);
-    text(vertices, &view.title, left + 20.0 * scale, top + 17.0 * scale, 1.8 * scale, 0xFF63C5FF);
-    text(vertices, &view.description, left + 20.0 * scale, top + 52.0 * scale, 1.0 * scale, 0xFFB5C7D8);
+    let layout = crate::dyn_menu::MenuLayout::new(output_width, output_height, view.rows.len());
+    let s = layout.scale;
 
-    let row_top = top + 96.0 * scale;
-    let row_height = 28.0 * scale;
+    rect(
+        vertices,
+        layout.left,
+        layout.top,
+        layout.left + layout.width,
+        layout.top + layout.height,
+        0xF0141D29,
+    );
+    rect(
+        vertices,
+        layout.left,
+        layout.top,
+        layout.left + layout.width,
+        layout.top + 4.0 * s,
+        0xFF36A6E8,
+    );
+
+    text(
+        vertices,
+        &view.title,
+        layout.left + 22.0 * s,
+        layout.top + 18.0 * s,
+        1.8 * s,
+        0xFF63C5FF,
+    );
+    text(
+        vertices,
+        &view.description,
+        layout.left + 22.0 * s,
+        layout.top + 55.0 * s,
+        1.0 * s,
+        0xFFB5C7D8,
+    );
+
     for (index, row) in view.rows.iter().enumerate() {
-        let y = row_top + index as f32 * row_height;
+        let y = layout.row_top + index as f32 * layout.row_height;
         if index == view.selected {
-            rect(vertices, left + 12.0 * scale, y - 4.0 * scale, left + panel_width - 12.0 * scale, y + 21.0 * scale, 0xAA245A7A);
+            rect(
+                vertices,
+                layout.left + 12.0 * s,
+                y + 2.0 * s,
+                layout.left + layout.width - 12.0 * s,
+                y + 31.0 * s,
+                0xAA245A7A,
+            );
         }
         text(
             vertices,
             row,
-            left + 24.0 * scale,
-            y,
-            1.25 * scale,
+            layout.left + 24.0 * s,
+            y + 11.0 * s,
+            1.25 * s,
             if index == view.selected { 0xFFFFFFFF } else { 0xFFE2EAF2 },
         );
     }
+
+    text(
+        vertices,
+        "ARROWS MOVE   ENTER SELECT   ESC BACK",
+        layout.left + 22.0 * s,
+        layout.top + layout.height - 22.0 * s,
+        0.85 * s,
+        0xFF8799AB,
+    );
 }
 
 fn rect(out: &mut Vec<Vertex>, left: f32, top: f32, right: f32, bottom: f32, color: u32) {
@@ -176,7 +245,9 @@ fn rect(out: &mut Vec<Vertex>, left: f32, top: f32, right: f32, bottom: f32, col
 fn text(out: &mut Vec<Vertex>, value: &str, x: f32, y: f32, scale: f32, color: u32) {
     let mut cursor = x;
     for ch in value.bytes() {
-        let rows = glyph(ch);
+        // The compact bitmap font is uppercase-only. Normalize text so menu
+        // descriptions are visible instead of silently rendering as blanks.
+        let rows = glyph(ch.to_ascii_uppercase());
         for (row, bits) in rows.iter().enumerate() {
             for col in 0..5 {
                 if bits & (1 << (4 - col)) != 0 {
