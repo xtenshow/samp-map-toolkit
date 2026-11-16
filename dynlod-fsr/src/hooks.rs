@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::RGNDATA;
 use windows::Win32::System::LibraryLoader::LoadLibraryA;
 use windows::core::{Interface, s};
 
-use crate::{benchmark, borderless, config, dynlod, dyn_menu, game, menu, overlay, renderer};
+use crate::{benchmark, borderless, config, dynlod, game, menu, overlay, renderer};
 
 type Direct3DCreate9Fn = unsafe extern "system" fn(u32) -> *mut c_void;
 type CreateDeviceFn = unsafe extern "system" fn(
@@ -965,7 +965,6 @@ unsafe extern "system" fn present_hook(
     // Count and draw once per completed game frame, not once per EndScene.
     POST_PROCESS_ACTIVE.with(|active| active.set(true));
     dynlod::on_frame();
-    dyn_menu::on_frame();
     if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }
         && let Err(error) = overlay::draw(device_reference)
     {
