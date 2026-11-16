@@ -163,8 +163,6 @@ pub fn view() -> Option<MenuView> {
         ],
         Page::Hud => vec![
             format!("HUD DISPLAY : {}", on_off(status.show_overlay)),
-            format!("AVERAGE FPS : {}", metric(status.avg_fps)),
-            format!("CURRENT FPS : {}", metric(status.fps)),
             "BACK".to_owned(),
         ],
     };
@@ -187,7 +185,7 @@ fn rows_for_page(page: Page) -> Vec<&'static str> {
         Page::Controller => vec!["toggle", "target", "minscale", "hysteresis", "response", "recovery", "sample", "back"],
         Page::Render => vec!["fsr", "quality", "rcas", "fxaa", "scale", "back"],
         Page::Distance => vec!["far", "lod", "back"],
-        Page::Hud => vec!["overlay", "average", "current", "back"],
+        Page::Hud => vec!["overlay", "back"],
     }
 }
 
@@ -233,7 +231,7 @@ fn activate(menu: &mut MenuState) {
         },
         Page::Hud => match menu.selected {
             0 => dynlod::menu_set_overlay(!status.show_overlay),
-            _ => {}
+            _ => { menu.page = Page::Main; menu.selected = 0; }
         }
     }
 }
@@ -300,7 +298,9 @@ fn mouse_row(output_width: u32, output_height: u32, row_count: usize) -> Option<
     if window.0.is_null() { return None; }
     let mut point = POINT::default();
     unsafe { GetCursorPos(&mut point) }.ok()?;
-    unsafe { ScreenToClient(window, &mut point) }.ok()?;
+    if unsafe { ScreenToClient(window, &mut point) }.0 == 0 {
+        return None;
+    }
     let mut client = RECT::default();
     unsafe { GetClientRect(window, &mut client) }.ok()?;
     let cw = (client.right - client.left).max(1) as f32;
