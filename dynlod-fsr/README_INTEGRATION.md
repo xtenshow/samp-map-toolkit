@@ -24,4 +24,4 @@ Use GTA San Andreas Classic 1.0 US Compact or Hoodlum with an ASI loader. Copy
 `gta_sa.exe`. A successful build is not a substitute for a runtime test on the target game installation.
 
 
-Pull requests targeting `dynlod-fsr-build` are validated by the same 32-bit Windows build and unit-test workflow.
+Pull requests targeting `dynlod-fsr-build` are validated by the same 32-bit Windows build and unit-test workflow. The PR validation runs the same unit tests and release packaging steps as the branch build.
