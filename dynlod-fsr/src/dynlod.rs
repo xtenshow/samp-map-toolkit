@@ -303,8 +303,8 @@ pub fn menu_adjust_value(index: usize, direction: i32) {
 fn toggle(s: &mut State, now: Instant) {
     if s.enabled {
         s.enabled = false; s.quality = s.settings.max_quality; s.multiplier = 1.0;
-        s.history.clear(); s.avg_history.clear(); s.frames = 0;
-        s.smooth_fps = 0.0; s.avg_fps = 0.0;
+        s.history.clear(); s.frames = 0;
+        s.smooth_fps = 0.0;
         if s.applied_scale.is_some() {
             let _ = config::set_quality(s.base_quality, false);
             let _ = config::set_render_scale(s.base_scale, false);
