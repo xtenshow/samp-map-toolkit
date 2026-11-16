@@ -5,7 +5,7 @@
 - DynamicLOD is disabled by default and toggles with **F11** or the SA-MP command `/dyn on` / `/dyn off`.
 - Use `/dyn` to open the rebuilt in-game menu. It has separate Controller, FSR/Render, World Distance, and HUD/Stats pages, each with a short Finglish description. Use mouse clicks, arrow keys, Enter, and Esc.
 - Use `/dyn hud`, `/dyn hud on`, or `/dyn hud off` to control the performance HUD.
-- The HUD shows current FPS, rolling average FPS, process CPU usage, process RAM working set, process GPU-engine utilization, actual render-target dimensions, output dimensions, and FSR scale. GPU reports N/A when Windows does not expose the process GPU counter.
+- The HUD shows current FPS, rolling average FPS, process CPU usage, process RAM working set, process GPU-engine utilization, actual render-target dimensions, output dimensions, and FSR scale. GPU reports N/A when Windows does not expose the process GPU counter. The 32-bit Windows build runs unit tests before packaging.
 - Set `dynamic_lod_target_fps` in `gta_sa_fsr.ini` to any target (for example 75, 90, 120, or 144). This is a target, not an FPS cap. The controller adapts FSR render scale around it, and detects edits to this value live without restarting GTA.
 - The controller samples the final Present frame boundary, applies hysteresis and asymmetric response/recovery, then changes FSR's custom render scale gradually.
 - Render-target rebuilds are rate-limited to at least 3.5 seconds apart and require a larger scale delta to avoid frequent resolution changes.
