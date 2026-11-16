@@ -8,11 +8,12 @@ use std::{
 };
 
 use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, MEM_COMMIT, VirtualQuery};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetCursorPos, GetForegroundWindow, ScreenToClient, ShowCursor,
+    GetClientRect, GetCursorPos, GetForegroundWindow, ShowCursor,
 };
 use windows::core::s;
 
@@ -292,7 +293,7 @@ fn edge(value: bool, previous: &mut bool) -> bool {
     changed
 }
 
-fn key_down(vk: i32) -> bool { unsafe { GetAsyncKeyState(vk) } < 0 }
+fn key_down(vk: i32) -> bool { (unsafe { GetAsyncKeyState(vk) }) < 0 }
 
 fn mouse_row(output_width: u32, output_height: u32, row_count: usize) -> Option<usize> {
     let window = unsafe { GetForegroundWindow() };
