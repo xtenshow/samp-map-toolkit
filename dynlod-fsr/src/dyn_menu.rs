@@ -12,7 +12,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, MEM_COMMIT, VirtualQuery};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetCursorPos, GetForegroundWindow, ScreenToClient,
+    GetClientRect, GetCursorPos, GetForegroundWindow, ScreenToClient, ShowCursor,
 };
 use windows::core::s;
 
@@ -35,6 +35,7 @@ struct MenuState {
     last_enter: bool,
     last_escape: bool,
     last_mouse: bool,
+    cursor_adjustment: i32,
     command_registered: bool,
     last_register_attempt: Instant,
 }
@@ -44,7 +45,7 @@ impl MenuState {
             open: false, page: Page::Main, selected: 0,
             last_up: false, last_down: false, last_left: false,
             last_right: false, last_enter: false, last_escape: false,
-            last_mouse: false, command_registered: false,
+            last_mouse: false, cursor_adjustment: 0, command_registered: false,
             last_register_attempt: Instant::now() - Duration::from_secs(5),
         }
     }
@@ -78,7 +79,11 @@ pub fn on_frame(output_width: u32, output_height: u32) {
             config::log("SA-MP /dyn command registered");
         }
     }
-    if !menu.open { return; }
+    if !menu.open {
+        restore_menu_cursor(&mut menu);
+        return;
+    }
+    show_menu_cursor(&mut menu);
 
     let up = key_down(0x26);
     let down = key_down(0x28);
@@ -90,6 +95,7 @@ pub fn on_frame(output_width: u32, output_height: u32) {
 
     if edge(escape, &mut menu.last_escape) {
         menu.open = false;
+        restore_menu_cursor(&mut menu);
         return;
     }
     if edge(up, &mut menu.last_up) {
@@ -113,6 +119,7 @@ pub fn on_frame(output_width: u32, output_height: u32) {
     } else if enter_edge {
         activate(&mut menu);
     }
+    if !menu.open { restore_menu_cursor(&mut menu); }
 }
 
 pub fn view() -> Option<MenuView> {
@@ -260,6 +267,22 @@ fn adjust_selected(menu: &MenuState, direction: i32) {
             if menu.selected == 1 { dynlod::menu_adjust_value(7, direction); }
         }
         _ => {}
+    }
+}
+
+fn show_menu_cursor(menu: &mut MenuState) {
+    if menu.cursor_adjustment != 0 { return; }
+    for _ in 0..16 {
+        let count = unsafe { ShowCursor(true) };
+        menu.cursor_adjustment += 1;
+        if count >= 0 { break; }
+    }
+}
+
+fn restore_menu_cursor(menu: &mut MenuState) {
+    while menu.cursor_adjustment > 0 {
+        unsafe { ShowCursor(false) };
+        menu.cursor_adjustment -= 1;
     }
 }
 
