@@ -5,6 +5,11 @@ on:
     paths:
       - 'dynlod-fsr/**'
       - '.github/workflows/dynlod-fsr-build.yml'
+  pull_request:
+    branches: [dynlod-fsr-build]
+    paths:
+      - 'dynlod-fsr/**'
+      - '.github/workflows/dynlod-fsr-build.yml'
   workflow_dispatch:
 permissions:
   contents: read
