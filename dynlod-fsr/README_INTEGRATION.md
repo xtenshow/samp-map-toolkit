@@ -22,3 +22,6 @@ packages the plugin as an ASI, and publishes the installable files as a workflow
 Use GTA San Andreas Classic 1.0 US Compact or Hoodlum with an ASI loader. Copy
 `gta_sa_fsr.asi` and `gta_sa_fsr.ini` from the artifact into the same folder as
 `gta_sa.exe`. A successful build is not a substitute for a runtime test on the target game installation.
+
+
+Pull requests targeting `dynlod-fsr-build` are validated by the same 32-bit Windows build and unit-test workflow.
