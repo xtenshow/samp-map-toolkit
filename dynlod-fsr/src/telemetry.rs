@@ -62,12 +62,14 @@ pub fn update() {
     state.last_sample = now;
 
     state.metrics.ram_mb = process_memory_mb();
-    state.metrics.cpu_pct = process_cpu_pct(&mut state, now);
-    if !state.pdh_failed {
-        state.metrics.gpu_pct = process_gpu_pct(&mut state);
+    let cpu = process_cpu_pct(&mut state, now);
+    state.metrics.cpu_pct = cpu;
+    let gpu = if state.pdh_failed {
+        None
     } else {
-        state.metrics.gpu_pct = None;
-    }
+        process_gpu_pct(&mut state)
+    };
+    state.metrics.gpu_pct = gpu;
 }
 
 pub fn snapshot() -> Metrics {
