@@ -17,7 +17,7 @@ use windows::Win32::System::Performance::{
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
-use windows::core::w;
+use windows::core::{PCWSTR, w};
 
 const SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
@@ -31,7 +31,6 @@ pub struct Metrics {
 struct PdhState {
     query: usize,
     counter: usize,
-    baseline_ready: bool,
 }
 
 struct State {
@@ -120,7 +119,7 @@ fn ensure_pdh(state: &mut State) -> bool {
     }
 
     let mut query = PDH_HQUERY::default();
-    let open_status = unsafe { PdhOpenQueryW(None, 0, &mut query) };
+    let open_status = unsafe { PdhOpenQueryW(PCWSTR::null(), 0, &mut query) };
     if open_status != 0 {
         state.pdh_failed = true;
         return false;
@@ -152,7 +151,6 @@ fn ensure_pdh(state: &mut State) -> bool {
     state.pdh = Some(PdhState {
         query: query.0 as usize,
         counter: counter.0 as usize,
-        baseline_ready: true,
     });
     true
 }
