@@ -184,7 +184,23 @@ pub fn on_frame() {
             config::log(&format!("DynamicLOD target FPS changed to {:.0}", refreshed.target));
         }
         s.settings.show_overlay = refreshed.show_overlay;
+        s.settings.min_scale = refreshed.min_scale;
+        s.settings.hysteresis = refreshed.hysteresis;
+        s.settings.response = refreshed.response;
+        s.settings.recovery = refreshed.recovery;
+        s.settings.sample_ms = refreshed.sample_ms;
+        s.settings.far_clip = refreshed.far_clip;
+        s.settings.lod_distance = refreshed.lod_distance;
         s.last_target_reload = now;
+    }
+
+    // If the INI enables DynLOD at startup, capture the game's native
+    // distances once the world is ready before applying the configured base.
+    if s.enabled && s.base_far_clip.is_none() {
+        s.original_far_clip = read_float(FAR_CLIP);
+        s.original_lod_distance = read_float(LOD_DISTANCE);
+        s.base_far_clip = Some(s.settings.far_clip);
+        s.base_lod_distance = Some(s.settings.lod_distance);
     }
 
     if !game::world_render_stable() {
