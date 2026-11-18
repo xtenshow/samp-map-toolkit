@@ -1,16 +1,16 @@
-//! Experimental multi-core scene preparation with bounded diagnostics.
+//! Lightweight multi-core scene-distance analysis for GTA SA.
 //!
-//! RenderWare and Direct3D calls stay on GTA's render thread. The
-//! CRenderer::AddEntityToRenderList hook records only scalar distances;
-//! persistent workers classify the visible-entity render-list batch off-thread.
-//! Workers never dereference GTA pointers or touch RenderWare/D3D objects.
+//! GTA, RenderWare, physics, and Direct3D remain on the game thread. The
+//! SetupMapEntityVisibility hook copies only scalar distances and visibility
+//! result codes into a thread-local frame buffer. Workers classify those scalar
+//! samples off-thread; no GTA pointer or engine object crosses the boundary.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows::Win32::System::Threading::{
@@ -18,10 +18,42 @@ use windows::Win32::System::Threading::{
 };
 
 const MAX_SAMPLES_PER_FRAME: usize = 16_384;
-const DIAGNOSTIC_LOG_INTERVAL_SECONDS: u64 = 5;
+const MAX_WORKERS: usize = 7;
+const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
 thread_local! {
-    static FRAME_DISTANCES: RefCell<Vec<f32>> = RefCell::new(Vec::with_capacity(1024));
+    // Keep capacity between frames. The frame's vector is handed to workers
+    // only after capture has finished for that Present boundary.
+    static FRAME_CAPTURE: RefCell<FrameCapture> =
+        RefCell::new(FrameCapture::with_capacity(2_048));
+}
+
+struct FrameCapture {
+    distances: Vec<f32>,
+    map_visibility_calls: u64,
+    visibility_results: [u64; 4],
+    valid_distances: u64,
+    invalid_distances: u64,
+    sample_cap_hits: u64,
+    capture_thread_id: u32,
+    last_distance: f32,
+    max_distance: f32,
+}
+
+impl FrameCapture {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            distances: Vec::with_capacity(capacity),
+            map_visibility_calls: 0,
+            visibility_results: [0; 4],
+            valid_distances: 0,
+            invalid_distances: 0,
+            sample_cap_hits: 0,
+            capture_thread_id: 0,
+            last_distance: 0.0,
+            max_distance: 0.0,
+        }
+    }
 }
 
 struct Job {
@@ -40,7 +72,6 @@ struct WorkerStats {
     near_entities: AtomicU64,
     mid_entities: AtomicU64,
     far_entities: AtomicU64,
-    last_priority_ppm: AtomicU64,
 }
 
 impl WorkerStats {
@@ -55,7 +86,6 @@ impl WorkerStats {
             near_entities: AtomicU64::new(0),
             mid_entities: AtomicU64::new(0),
             far_entities: AtomicU64::new(0),
-            last_priority_ppm: AtomicU64::new(0),
         }
     }
 }
@@ -71,33 +101,28 @@ struct Pool {
     frames_submitted: AtomicU64,
     chunks_submitted: AtomicU64,
     chunks_dropped: AtomicU64,
-
-    // Hook / capture / frame-boundary diagnostics.
-    hook_calls: AtomicU64,
-    valid_distances: AtomicU64,
-    invalid_distances: AtomicU64,
-    sample_cap_hits: AtomicU64,
-    total_samples_captured: AtomicU64,
     present_calls: AtomicU64,
     empty_frames: AtomicU64,
     frames_with_samples: AtomicU64,
     max_samples_per_frame: AtomicUsize,
+    map_visibility_calls: AtomicU64,
+    visibility_results: [AtomicU64; 4],
+    valid_distances: AtomicU64,
+    invalid_distances: AtomicU64,
+    sample_cap_hits: AtomicU64,
+    total_samples_captured: AtomicU64,
     last_capture_thread: AtomicU32,
     last_present_thread: AtomicU32,
     last_distance_bits: AtomicU32,
     max_distance_bits: AtomicU32,
-    first_present_logged: AtomicBool,
-    map_visibility_calls: AtomicU64,
-    map_visibility_results: [AtomicU64; 4],
 }
 
 static POOL: OnceLock<Pool> = OnceLock::new();
-static STARTED_AT: OnceLock<Instant> = OnceLock::new();
-static LAST_DIAGNOSTIC_LOG_SECOND: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Default)]
 pub struct Status {
     pub worker_count: usize,
+    /// Number of workers that have completed at least one job this session.
     pub active_workers: usize,
     pub cpu_cores: String,
     pub worker_jobs: String,
@@ -110,8 +135,8 @@ pub struct Status {
     pub near_entities: u64,
     pub mid_entities: u64,
     pub far_entities: u64,
-
-    pub hook_calls: u64,
+    pub map_visibility_calls: u64,
+    pub visibility_results: [u64; 4],
     pub valid_distances: u64,
     pub invalid_distances: u64,
     pub sample_cap_hits: u64,
@@ -124,17 +149,20 @@ pub struct Status {
     pub last_present_thread: u32,
     pub last_distance: f32,
     pub max_distance: f32,
-    pub map_visibility_calls: u64,
-    pub map_visibility_results: [u64; 4],
 }
+
+#[derive(Default)]
+struct StatusCache {
+    updated_at: Option<Instant>,
+    value: Status,
+}
+
+static STATUS_CACHE: OnceLock<Mutex<StatusCache>> = OnceLock::new();
 
 pub fn initialize() {
     if POOL.get().is_some() {
         return;
     }
-
-    let started = Instant::now();
-    let _ = STARTED_AT.set(started);
 
     let mut system_info = SYSTEM_INFO::default();
     unsafe { GetSystemInfo(&mut system_info) };
@@ -142,22 +170,11 @@ pub fn initialize() {
     let available_processors = thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(system_processors);
+    let requested_workers = available_processors
+        .saturating_sub(1)
+        .clamp(1, MAX_WORKERS);
+
     let process_id = unsafe { GetCurrentProcessId() };
-    let thread_id = unsafe { GetCurrentThreadId() };
-    let processor_id = unsafe { GetCurrentProcessorNumber() };
-
-    crate::config::log(&format!(
-        "MC DEBUG environment: pid={process_id}, init_tid={thread_id}, init_cpu={processor_id}, system_logical_processors={system_processors}, rust_available_parallelism={available_processors}, active_processor_mask=0x{:X}, page_size={}, allocation_granularity={}, processor_type={}, pointer_bits={}, worker_affinity=not_pinned",
-        system_info.dwActiveProcessorMask,
-        system_info.dwPageSize,
-        system_info.dwAllocationGranularity,
-        system_info.dwProcessorType,
-        usize::BITS
-    ));
-
-    // Leave at least one logical processor available for GTA/SA-MP and the
-    // render thread. Keep a conservative cap for this first experiment.
-    let requested_workers = available_processors.saturating_sub(1).clamp(1, 7);
     let mut workers = Vec::with_capacity(requested_workers);
 
     for index in 0..requested_workers {
@@ -171,7 +188,7 @@ pub fn initialize() {
             let initial_cpu = unsafe { GetCurrentProcessorNumber() };
             worker_stats.thread_id.store(worker_tid, Ordering::Release);
             crate::config::log(&format!(
-                "MC DEBUG worker_started: index={index}, tid={worker_tid}, initial_cpu={initial_cpu}"
+                "Scene worker started: index={index}, tid={worker_tid}, initial_cpu={initial_cpu}"
             ));
 
             while let Ok(job) = receiver.recv() {
@@ -180,35 +197,17 @@ pub fn initialize() {
                 let mut near = 0_u64;
                 let mut mid = 0_u64;
                 let mut far = 0_u64;
-                let mut priority_sum = 0.0_f64;
 
                 for distance in &job.distances[job.start..job.end] {
-                    let d = f64::from(*distance).abs();
-                    if d < 100.0 {
-                        near += 1;
-                    } else if d < 350.0 {
-                        mid += 1;
-                    } else {
-                        far += 1;
+                    match distance_band(*distance) {
+                        0 => near += 1,
+                        1 => mid += 1,
+                        _ => far += 1,
                     }
-
-                    // A cheap LOD-importance estimate based on captured distances.
-                    let depth = d * d;
-                    let projected_weight = 1.0 / (1.0 + depth * 0.0004);
-                    let distance_fade = (1.0 - d / 2500.0).clamp(0.0, 1.0);
-                    priority_sum += projected_weight * distance_fade;
                 }
 
                 let count = (job.end - job.start) as u64;
-                let average_priority = if count == 0 {
-                    0.0
-                } else {
-                    priority_sum / count as f64
-                };
                 let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-                let current_tid = unsafe { GetCurrentThreadId() };
-
-                worker_stats.thread_id.store(current_tid, Ordering::Release);
                 worker_stats.last_processor.store(processor, Ordering::Release);
                 if processor < 64 {
                     worker_stats.processors_seen.fetch_or(1_u64 << processor, Ordering::Relaxed);
@@ -219,16 +218,12 @@ pub fn initialize() {
                 worker_stats.near_entities.fetch_add(near, Ordering::Relaxed);
                 worker_stats.mid_entities.fetch_add(mid, Ordering::Relaxed);
                 worker_stats.far_entities.fetch_add(far, Ordering::Relaxed);
-                worker_stats.last_priority_ppm.store(
-                    (average_priority * 1_000_000.0).round() as u64,
-                    Ordering::Release,
-                );
             }
         }) {
             Ok(_thread) => workers.push(Worker { sender, stats }),
             Err(error) => {
                 crate::config::log(&format!(
-                    "MC DEBUG worker_start_failed: index={index}, error={error}"
+                    "Scene worker startup failed: index={index}, error={error}"
                 ));
                 break;
             }
@@ -236,7 +231,7 @@ pub fn initialize() {
     }
 
     if workers.is_empty() {
-        crate::config::log("MC DEBUG ERROR: scene pipeline unavailable; no worker threads started");
+        crate::config::log("Multicore scene analysis unavailable: no worker threads started");
         return;
     }
 
@@ -247,100 +242,135 @@ pub fn initialize() {
         frames_submitted: AtomicU64::new(0),
         chunks_submitted: AtomicU64::new(0),
         chunks_dropped: AtomicU64::new(0),
-        hook_calls: AtomicU64::new(0),
-        valid_distances: AtomicU64::new(0),
-        invalid_distances: AtomicU64::new(0),
-        sample_cap_hits: AtomicU64::new(0),
-        total_samples_captured: AtomicU64::new(0),
         present_calls: AtomicU64::new(0),
         empty_frames: AtomicU64::new(0),
         frames_with_samples: AtomicU64::new(0),
         max_samples_per_frame: AtomicUsize::new(0),
+        map_visibility_calls: AtomicU64::new(0),
+        visibility_results: std::array::from_fn(|_| AtomicU64::new(0)),
+        valid_distances: AtomicU64::new(0),
+        invalid_distances: AtomicU64::new(0),
+        sample_cap_hits: AtomicU64::new(0),
+        total_samples_captured: AtomicU64::new(0),
         last_capture_thread: AtomicU32::new(0),
         last_present_thread: AtomicU32::new(0),
         last_distance_bits: AtomicU32::new(0),
         max_distance_bits: AtomicU32::new(0),
-        first_present_logged: AtomicBool::new(false),
-        map_visibility_calls: AtomicU64::new(0),
-        map_visibility_results: std::array::from_fn(|_| AtomicU64::new(0)),
     });
+
     crate::config::log(&format!(
-        "Multicore scene pipeline ready: {count} worker threads; Direct3D remains on the game thread"
+        "Multicore scene analysis ready: workers={count}/{requested_workers}, logical_processors={system_processors}, process_id={process_id}, one_logical_processor_reserved=true"
     ));
-    crate::config::log("MC DEBUG counters initialized; periodic diagnostic snapshot interval=5s");
 }
 
-/// Called from the RenderWare render-list hook on the game/render thread.
-/// Only a scalar is copied; worker threads never dereference the entity.
-pub fn record_render_entity(distance: f32) {
-    let Some(pool) = POOL.get() else {
-        return;
-    };
-    pool.hook_calls.fetch_add(1, Ordering::Relaxed);
-    record_distance(pool, distance);
-}
-
-/// Capture the computed scalar distance passed to SetupMapEntityVisibility.
+/// Called after GTA's original SetupMapEntityVisibility function returns.
+/// The hook copies only scalar values into a thread-local frame buffer. No
+/// per-entity atomics, system calls, file I/O, or worker synchronization occur.
 pub fn record_map_visibility_sample(distance: f32, result: i32) {
-    let Some(pool) = POOL.get() else {
-        return;
-    };
-    pool.map_visibility_calls.fetch_add(1, Ordering::Relaxed);
-    if (0..4).contains(&result) {
-        pool.map_visibility_results[result as usize].fetch_add(1, Ordering::Relaxed);
-    }
-    record_distance(pool, distance);
-}
+    FRAME_CAPTURE.with(|capture| {
+        let mut capture = capture.borrow_mut();
+        if capture.map_visibility_calls == 0 {
+            capture.capture_thread_id = unsafe { GetCurrentThreadId() };
+        }
+        capture.map_visibility_calls += 1;
 
-fn record_distance(pool: &Pool, distance: f32) {
-    pool.last_capture_thread.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-    if !distance.is_finite() || distance < 0.0 {
-        pool.invalid_distances.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    pool.valid_distances.fetch_add(1, Ordering::Relaxed);
-    pool.last_distance_bits.store(distance.to_bits(), Ordering::Release);
-    pool.max_distance_bits.fetch_max(distance.to_bits(), Ordering::Relaxed);
+        if (0..4).contains(&result) {
+            capture.visibility_results[result as usize] += 1;
+        }
 
-    FRAME_DISTANCES.with(|buffer| {
-        let mut buffer = buffer.borrow_mut();
-        if buffer.len() < MAX_SAMPLES_PER_FRAME {
-            buffer.push(distance);
-            pool.total_samples_captured.fetch_add(1, Ordering::Relaxed);
+        if !distance.is_finite() || distance < 0.0 {
+            capture.invalid_distances += 1;
+            return;
+        }
+
+        capture.valid_distances += 1;
+        capture.last_distance = distance;
+        capture.max_distance = capture.max_distance.max(distance);
+
+        if capture.distances.len() < MAX_SAMPLES_PER_FRAME {
+            capture.distances.push(distance);
         } else {
-            pool.sample_cap_hits.fetch_add(1, Ordering::Relaxed);
+            capture.sample_cap_hits += 1;
         }
     });
 }
 
-/// Dispatch the current frame's captured entity distances without waiting.
-/// If a worker is still busy, its chunk is dropped rather than stalling GTA.
+/// Called at Present. Frame counters are merged in batches and worker
+/// submission is non-blocking: a busy worker drops its chunk instead of
+/// stalling GTA's render thread.
 pub fn submit_frame() {
     let Some(pool) = POOL.get() else {
         return;
     };
-    let present_number = pool.present_calls.fetch_add(1, Ordering::Relaxed) + 1;
-    let present_thread = unsafe { GetCurrentThreadId() };
-    pool.last_present_thread.store(present_thread, Ordering::Release);
 
-    if !pool.first_present_logged.swap(true, Ordering::AcqRel) {
-        crate::config::log(&format!(
-            "MC DEBUG first_present: count={present_number}, tid={present_thread}, cpu={}",
-            unsafe { GetCurrentProcessorNumber() }
-        ));
+    let present_thread = unsafe { GetCurrentThreadId() };
+    let (
+        samples,
+        map_visibility_calls,
+        visibility_results,
+        valid_distances,
+        invalid_distances,
+        sample_cap_hits,
+        capture_thread,
+        last_distance,
+        max_distance,
+    ) = FRAME_CAPTURE.with(|slot| {
+        let mut capture = slot.borrow_mut();
+        let samples = capture.distances.split_off(0);
+        let frame = (
+            samples,
+            capture.map_visibility_calls,
+            capture.visibility_results,
+            capture.valid_distances,
+            capture.invalid_distances,
+            capture.sample_cap_hits,
+            capture.capture_thread_id,
+            capture.last_distance,
+            capture.max_distance,
+        );
+
+        capture.map_visibility_calls = 0;
+        capture.visibility_results = [0; 4];
+        capture.valid_distances = 0;
+        capture.invalid_distances = 0;
+        capture.sample_cap_hits = 0;
+        capture.capture_thread_id = 0;
+        capture.last_distance = 0.0;
+        capture.max_distance = 0.0;
+        frame
+    });
+
+    pool.present_calls.fetch_add(1, Ordering::Relaxed);
+    pool.last_present_thread.store(present_thread, Ordering::Release);
+    if capture_thread != 0 {
+        pool.last_capture_thread.store(capture_thread, Ordering::Release);
     }
 
-    let samples = FRAME_DISTANCES.with(|buffer| buffer.borrow_mut().split_off(0));
+    pool.map_visibility_calls.fetch_add(map_visibility_calls, Ordering::Relaxed);
+    for (index, count) in visibility_results.iter().enumerate() {
+        pool.visibility_results[index].fetch_add(*count, Ordering::Relaxed);
+    }
+    pool.valid_distances.fetch_add(valid_distances, Ordering::Relaxed);
+    pool.invalid_distances.fetch_add(invalid_distances, Ordering::Relaxed);
+    pool.sample_cap_hits.fetch_add(sample_cap_hits, Ordering::Relaxed);
+    pool.total_samples_captured.fetch_add(samples.len() as u64, Ordering::Relaxed);
+
+    if valid_distances > 0 {
+        pool.last_distance_bits.store(last_distance.to_bits(), Ordering::Release);
+        pool.max_distance_bits.fetch_max(max_distance.to_bits(), Ordering::Relaxed);
+    }
+
     pool.last_frame_entities.store(samples.len(), Ordering::Relaxed);
     pool.max_samples_per_frame.fetch_max(samples.len(), Ordering::Relaxed);
+
     if samples.is_empty() {
         pool.empty_frames.fetch_add(1, Ordering::Relaxed);
-        maybe_log_diagnostics();
         return;
     }
 
     pool.frames_with_samples.fetch_add(1, Ordering::Relaxed);
     pool.frames_submitted.fetch_add(1, Ordering::Relaxed);
+
     let worker_count = pool.workers.len();
     let chunk_size = samples.len().div_ceil(worker_count);
     let distances = Arc::new(samples);
@@ -366,67 +396,31 @@ pub fn submit_frame() {
             }
         }
     }
-    maybe_log_diagnostics();
 }
 
-fn maybe_log_diagnostics() {
-    let elapsed_seconds = STARTED_AT.get_or_init(Instant::now).elapsed().as_secs();
-    let previous = LAST_DIAGNOSTIC_LOG_SECOND.load(Ordering::Relaxed);
-    if elapsed_seconds < previous.saturating_add(DIAGNOSTIC_LOG_INTERVAL_SECONDS) {
-        return;
+fn distance_band(distance: f32) -> u8 {
+    if distance < 100.0 {
+        0
+    } else if distance < 350.0 {
+        1
+    } else {
+        2
     }
-    if LAST_DIAGNOSTIC_LOG_SECOND
-        .compare_exchange(previous, elapsed_seconds, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-
-    let snapshot = status();
-    crate::config::log(&format!(
-        "MC DEBUG snapshot: present_calls={}, add_entity_hook_calls={}, map_visibility_calls={}, visibility_results=[invisible:{};visible:{};culled:{};streamme:{}], valid_distances={}, invalid_distances={}, total_samples={}, last_frame_entities={}, max_frame_entities={}, frames_with_samples={}, empty_frames={}, sample_cap_hits={}, chunks_submitted={}, chunks_dropped={}, processed_entities={}, workers_used={}/{}, worker_jobs=[{}], observed_cpus={}, capture_tid={}, present_tid={}, last_distance={:.2}, max_distance={:.2}, worker_time_ms={}",
-        snapshot.present_calls,
-        snapshot.hook_calls,
-        snapshot.map_visibility_calls,
-        snapshot.map_visibility_results[0],
-        snapshot.map_visibility_results[1],
-        snapshot.map_visibility_results[2],
-        snapshot.map_visibility_results[3],
-        snapshot.valid_distances,
-        snapshot.invalid_distances,
-        snapshot.total_samples_captured,
-        snapshot.last_frame_entities,
-        snapshot.max_samples_per_frame,
-        snapshot.frames_with_samples,
-        snapshot.empty_frames,
-        snapshot.sample_cap_hits,
-        snapshot.chunks_submitted,
-        snapshot.chunks_dropped,
-        snapshot.processed_entities,
-        snapshot.active_workers,
-        snapshot.worker_count,
-        snapshot.worker_jobs,
-        snapshot.cpu_cores,
-        snapshot.last_capture_thread,
-        snapshot.last_present_thread,
-        snapshot.last_distance,
-        snapshot.max_distance,
-        snapshot.worker_time_ms
-    ));
-    crate::config::log(&format!(
-        "MC DEBUG game_state: {}",
-        crate::game::diagnostic_snapshot()
-    ));
-    crate::config::log(&format!(
-        "MC DEBUG render_path: {}",
-        crate::hooks::multicore_render_path_diagnostics()
-    ));
 }
 
 pub fn status() -> Status {
     let Some(pool) = POOL.get() else {
         return Status::default();
     };
+
+    let cache = STATUS_CACHE.get_or_init(|| Mutex::new(StatusCache::default()));
+    let now = Instant::now();
+    let mut cached = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if cached.updated_at.is_some_and(|updated| {
+        now.saturating_duration_since(updated) < STATUS_REFRESH_INTERVAL
+    }) {
+        return cached.value.clone();
+    }
 
     let mut active_workers = 0_usize;
     let mut processors_mask = 0_u64;
@@ -445,10 +439,12 @@ pub fn status() -> Status {
         processors_mask |= worker.stats.processors_seen.load(Ordering::Relaxed);
         let processor = worker.stats.last_processor.load(Ordering::Acquire);
         let thread_id = worker.stats.thread_id.load(Ordering::Acquire);
-        worker_jobs.push(format!(
-            "W{index}:J{jobs}@CPU{}#T{thread_id}",
-            if processor == u32::MAX { "PENDING".to_owned() } else { processor.to_string() }
-        ));
+        let processor_label = if processor == u32::MAX {
+            "PENDING".to_owned()
+        } else {
+            processor.to_string()
+        };
+        worker_jobs.push(format!("W{index}:J{jobs}@CPU{processor_label}#T{thread_id}"));
         processed_entities += worker.stats.entities.load(Ordering::Relaxed);
         worker_time_ns += worker.stats.elapsed_ns.load(Ordering::Relaxed);
         near_entities += worker.stats.near_entities.load(Ordering::Relaxed);
@@ -461,10 +457,14 @@ pub fn status() -> Status {
         .map(|processor| processor.to_string())
         .collect::<Vec<_>>();
 
-    Status {
+    let value = Status {
         worker_count: pool.workers.len(),
         active_workers,
-        cpu_cores: if processors.is_empty() { "pending".to_owned() } else { processors.join(",") },
+        cpu_cores: if processors.is_empty() {
+            "pending".to_owned()
+        } else {
+            processors.join(",")
+        },
         worker_jobs: worker_jobs.join(";"),
         last_frame_entities: pool.last_frame_entities.load(Ordering::Relaxed),
         processed_entities,
@@ -475,7 +475,10 @@ pub fn status() -> Status {
         near_entities,
         mid_entities,
         far_entities,
-        hook_calls: pool.hook_calls.load(Ordering::Relaxed),
+        map_visibility_calls: pool.map_visibility_calls.load(Ordering::Relaxed),
+        visibility_results: std::array::from_fn(|index| {
+            pool.visibility_results[index].load(Ordering::Relaxed)
+        }),
         valid_distances: pool.valid_distances.load(Ordering::Relaxed),
         invalid_distances: pool.invalid_distances.load(Ordering::Relaxed),
         sample_cap_hits: pool.sample_cap_hits.load(Ordering::Relaxed),
@@ -488,28 +491,35 @@ pub fn status() -> Status {
         last_present_thread: pool.last_present_thread.load(Ordering::Acquire),
         last_distance: f32::from_bits(pool.last_distance_bits.load(Ordering::Acquire)),
         max_distance: f32::from_bits(pool.max_distance_bits.load(Ordering::Acquire)),
-        map_visibility_calls: pool.map_visibility_calls.load(Ordering::Relaxed),
-        map_visibility_results: std::array::from_fn(|index| {
-            pool.map_visibility_results[index].load(Ordering::Relaxed)
-        }),
-    }
+    };
+
+    cached.updated_at = Some(now);
+    cached.value = value.clone();
+    value
 }
 
 #[cfg(test)]
 mod tests {
+    use super::distance_band;
+
     #[test]
     fn distance_bands_are_non_overlapping() {
         for distance in [0.0_f32, 99.9, 100.0, 349.9, 350.0, 2_500.0] {
-            let near = distance < 100.0;
-            let mid = (100.0..350.0).contains(&distance);
-            let far = distance >= 350.0;
-            assert_eq!(near as u8 + mid as u8 + far as u8, 1);
+            assert!(distance_band(distance) <= 2);
         }
     }
 
     #[test]
+    fn distance_band_boundaries_are_stable() {
+        assert_eq!(distance_band(99.999), 0);
+        assert_eq!(distance_band(100.0), 1);
+        assert_eq!(distance_band(349.999), 1);
+        assert_eq!(distance_band(350.0), 2);
+    }
+
+    #[test]
     fn positive_float_bits_preserve_numeric_order() {
-        let values = [0.0_f32, 0.1, 1.0, 100.0, 1000.0];
+        let values = [0.0_f32, 0.1, 1.0, 100.0, 1_000.0];
         for pair in values.windows(2) {
             assert!(pair[0].to_bits() < pair[1].to_bits());
         }
