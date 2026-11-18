@@ -148,8 +148,12 @@ pub fn diagnostic_snapshot() -> String {
     let auxiliary_scene = unsafe { read_address::<u8>(AUXILIARY_RENDER_SCENE_ADDRESS) } != 0;
     let main_camera = unsafe { read_address::<usize>(MAIN_CAMERA_ADDRESS) };
     let samp_dll_loaded = unsafe { GetModuleHandleA(s!("samp.dll")) }.is_ok();
+    let executable_module_base = unsafe { GetModuleHandleA(s!("gta_sa.exe")) }
+        .map(|module| module.0 as usize)
+        .unwrap_or(0);
     format!(
-        "supported_executable=true, game_state={}, menu_active={}, game_not_loaded={}, loading_screen={}, code_paused={}, user_paused={}, streaming_initialized={}, loading_scene={}, models_requested={}, player_ped=0x{:08X}, player_state={}, entry_exit_state={}, auxiliary_render_scene={}, main_camera=0x{:08X}, samp_dll_loaded={}",
+        "supported_executable=true, executable_module_base=0x{:08X}, game_state={}, menu_active={}, game_not_loaded={}, loading_screen={}, code_paused={}, user_paused={}, streaming_initialized={}, loading_scene={}, models_requested={}, player_ped=0x{:08X}, player_state={}, entry_exit_state={}, auxiliary_render_scene={}, main_camera=0x{:08X}, samp_dll_loaded={}",
+        executable_module_base,
         snapshot.game_state,
         snapshot.menu_active,
         snapshot.game_not_loaded,
