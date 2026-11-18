@@ -612,9 +612,9 @@ unsafe extern "cdecl" fn renderer_setup_map_entity_visibility_hook(
 
     // This entrypoint receives the computed distance as a scalar argument.
     // Workers receive only that number, never a GTA pointer or RenderWare state.
-    let hit = RENDERER_SETUP_MAP_VISIBILITY_HITS.fetch_add(1, Ordering::Relaxed) + 1;
-    multicore::record_map_visibility_sample(distance, 0);
     let result = unsafe { original(entity, model_info, distance, time_in_range) };
+    let hit = RENDERER_SETUP_MAP_VISIBILITY_HITS.fetch_add(1, Ordering::Relaxed) + 1;
+    multicore::record_map_visibility_sample(distance, result);
     if !RENDERER_SETUP_MAP_VISIBILITY_FIRST_HIT.swap(true, Ordering::AcqRel) {
         config::log(&format!(
             "MC DEBUG render_path_first_hit: name=SetupMapEntityVisibility, hit={hit}, result={result}, distance={distance:.3}, entity={entity:p}, model_info={model_info:p}, time_in_range={}, tid={}, cpu={}",
