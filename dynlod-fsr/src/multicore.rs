@@ -2,7 +2,7 @@
 //!
 //! RenderWare and Direct3D calls stay on GTA's render thread. The RenderEntity
 //! callback records only scalar distances; persistent workers classify the
-//! actual visible-entity batch and calculate LOD priority metrics off-thread.
+//! the visible-entity render-list batch and calculate LOD priority metrics off-thread.
 //! No worker reads or writes GTA memory, RenderWare objects, or D3D resources.
 
 use std::cell::RefCell;
@@ -122,7 +122,7 @@ pub fn initialize() {
                     }
 
                     // A cheap view-space LOD importance estimate. This uses
-                    // real per-entity distances captured during RenderEntity.
+                    // real per-entity distances captured during render-list construction.
                     let depth = d * d;
                     let projected_weight = 1.0 / (1.0 + depth * 0.0004);
                     let distance_fade = (1.0 - d / 2500.0).clamp(0.0, 1.0);
