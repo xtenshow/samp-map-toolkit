@@ -166,10 +166,6 @@ pub fn initialize() {
             let worker_tid = unsafe { GetCurrentThreadId() };
             let initial_cpu = unsafe { GetCurrentProcessorNumber() };
             worker_stats.thread_id.store(worker_tid, Ordering::Release);
-            worker_stats.last_processor.store(initial_cpu, Ordering::Release);
-            if initial_cpu < 64 {
-                worker_stats.processors_seen.fetch_or(1_u64 << initial_cpu, Ordering::Relaxed);
-            }
             crate::config::log(&format!(
                 "MC DEBUG worker_started: index={index}, tid={worker_tid}, initial_cpu={initial_cpu}"
             ));
