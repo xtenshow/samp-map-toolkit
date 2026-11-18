@@ -33,3 +33,16 @@ Use GTA San Andreas Classic 1.0 US Compact or Hoodlum with an ASI loader. Copy
 
 
 Pull requests targeting `dynlod-fsr-build` are validated by the same 32-bit Windows build and unit-test workflow. The PR validation runs the same unit tests and release packaging steps as the branch build.
+
+
+## Multicore Debug Probes v2
+
+This diagnostic build adds counters and live byte snapshots for the GTA renderer path:
+- CRenderer::ConstructRenderList
+- CRenderer::ScanWorld
+- CRenderer::ScanSectorList
+- CRenderer::SetupEntityVisibility
+- CRenderer::PreRender
+- CRenderer::AddEntityToRenderList
+
+It does not move GTA/RenderWare/Direct3D rendering to worker threads. The additional hooks call their original functions unchanged and only count first-hit/call data. Every diagnostic interval records current code bytes at these entrypoints to reveal whether another plugin later replaces a detour.
