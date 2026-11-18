@@ -1,5 +1,7 @@
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};\nuse windows::Win32::System::LibraryLoader::GetModuleHandleA;\nuse windows::core::s;
+use std::sync::atomic::{AtomicBool, Ordering};
+use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::core::s;
 
 const EXECUTABLE_SIGNATURE_ADDRESS: usize = 0x40_1000;
 const GTA_SA_10_US_COMPACT_SIGNATURE: u32 = 0x53EC_8B55;
