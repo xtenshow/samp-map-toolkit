@@ -46,3 +46,15 @@ This diagnostic build adds counters and live byte snapshots for the GTA renderer
 - CRenderer::AddEntityToRenderList
 
 It does not move GTA/RenderWare/Direct3D rendering to worker threads. The additional hooks call their original functions unchanged and only count first-hit/call data. Every diagnostic interval records current code bytes at these entrypoints to reveal whether another plugin later replaces a detour.
+
+
+## Multicore Debug capture v3
+
+This diagnostic build captures the computed scalar distance passed to
+`CRenderer::SetupMapEntityVisibility` (0x553F60). The previous
+`AddEntityToRenderList` target was never reached in the user's live SA-MP
+session despite the higher-level render-list path running normally.
+
+The new probe logs the call count and dispatches only the scalar distance
+to the existing worker pool. It does not pass entity pointers to workers and
+does not move GTA, RenderWare, physics, or Direct3D calls off the game thread.
