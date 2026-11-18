@@ -1,5 +1,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::core::s;
 
 const EXECUTABLE_SIGNATURE_ADDRESS: usize = 0x40_1000;
 const GTA_SA_10_US_COMPACT_SIGNATURE: u32 = 0x53EC_8B55;
@@ -135,6 +137,39 @@ pub fn world_render_stable() -> bool {
         get_status(THE_CAMERA_ADDRESS as *mut std::ffi::c_void)
     };
     runtime_world_candidate(snapshot, entry_exit_state, fade_status)
+}
+
+pub fn diagnostic_snapshot() -> String {
+    if !is_supported_executable() {
+        return "supported_executable=false".to_owned();
+    }
+    let snapshot = current_world_snapshot();
+    let entry_exit_state = unsafe { read_address::<i32>(ENTRY_EXIT_STATE_ADDRESS) };
+    let auxiliary_scene = unsafe { read_address::<u8>(AUXILIARY_RENDER_SCENE_ADDRESS) } != 0;
+    let main_camera = unsafe { read_address::<usize>(MAIN_CAMERA_ADDRESS) };
+    let samp_dll_loaded = unsafe { GetModuleHandleA(s!("samp.dll")) }.is_ok();
+    let executable_module_base = unsafe { GetModuleHandleA(s!("gta_sa.exe")) }
+        .map(|module| module.0 as usize)
+        .unwrap_or(0);
+    format!(
+        "supported_executable=true, executable_module_base=0x{:08X}, game_state={}, menu_active={}, game_not_loaded={}, loading_screen={}, code_paused={}, user_paused={}, streaming_initialized={}, loading_scene={}, models_requested={}, player_ped=0x{:08X}, player_state={}, entry_exit_state={}, auxiliary_render_scene={}, main_camera=0x{:08X}, samp_dll_loaded={}",
+        executable_module_base,
+        snapshot.game_state,
+        snapshot.menu_active,
+        snapshot.game_not_loaded,
+        snapshot.loading_screen_active,
+        snapshot.code_paused,
+        snapshot.user_paused,
+        snapshot.streaming_initialized,
+        snapshot.loading_scene,
+        snapshot.models_requested,
+        snapshot.player_ped,
+        snapshot.player_state,
+        entry_exit_state,
+        auxiliary_scene,
+        main_camera,
+        samp_dll_loaded
+    )
 }
 
 pub fn main_camera() -> usize {
