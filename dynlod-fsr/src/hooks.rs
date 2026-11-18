@@ -39,6 +39,8 @@ type RendererAddEntityFn = unsafe extern "cdecl" fn(*mut c_void, f32);
 type RendererScanSectorFn = unsafe extern "cdecl" fn(i32, i32);
 type RendererSetupEntityVisibilityFn =
     unsafe extern "cdecl" fn(*mut c_void, *mut f32) -> i32;
+type RendererSetupMapVisibilityFn =
+    unsafe extern "cdecl" fn(*mut c_void, *mut c_void, f32, u32) -> i32;
 
 static ORIGINAL_DIRECT3D_CREATE9: OnceLock<Direct3DCreate9Fn> = OnceLock::new();
 static ORIGINAL_START_GAME: OnceLock<StartGameFn> = OnceLock::new();
@@ -57,6 +59,8 @@ static ORIGINAL_RENDERER_CONSTRUCT_LIST: OnceLock<GameVoidFn> = OnceLock::new();
 static ORIGINAL_RENDERER_SCAN_WORLD: OnceLock<GameVoidFn> = OnceLock::new();
 static ORIGINAL_RENDERER_SCAN_SECTOR: OnceLock<RendererScanSectorFn> = OnceLock::new();
 static ORIGINAL_RENDERER_SETUP_VISIBILITY: OnceLock<RendererSetupEntityVisibilityFn> =
+    OnceLock::new();
+static ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY: OnceLock<RendererSetupMapVisibilityFn> =
     OnceLock::new();
 static ORIGINAL_RENDERER_PRE_RENDER: OnceLock<GameVoidFn> = OnceLock::new();
 static D3D9_HOOKS: OnceLock<Mutex<HashMap<usize, D3D9Hooks>>> = OnceLock::new();
@@ -78,6 +82,8 @@ static RENDERER_CONSTRUCT_LIST_HITS: AtomicU64 = AtomicU64::new(0);
 static RENDERER_SCAN_WORLD_HITS: AtomicU64 = AtomicU64::new(0);
 static RENDERER_SCAN_SECTOR_HITS: AtomicU64 = AtomicU64::new(0);
 static RENDERER_SETUP_VISIBILITY_HITS: AtomicU64 = AtomicU64::new(0);
+static RENDERER_SETUP_MAP_VISIBILITY_HITS: AtomicU64 = AtomicU64::new(0);
+static RENDERER_SETUP_MAP_VISIBILITY_FIRST_HIT: AtomicBool = AtomicBool::new(false);
 static RENDERER_PRE_RENDER_HITS: AtomicU64 = AtomicU64::new(0);
 static RENDERER_CONSTRUCT_LIST_FIRST_HIT: AtomicBool = AtomicBool::new(false);
 static RENDERER_SCAN_WORLD_FIRST_HIT: AtomicBool = AtomicBool::new(false);
@@ -115,6 +121,7 @@ const RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS: usize = 0x55_34B0;
 const RENDERER_PRE_RENDER_ADDRESS: usize = 0x55_3910;
 const RENDERER_SCAN_SECTOR_LIST_ADDRESS: usize = 0x55_4840;
 const RENDERER_SETUP_ENTITY_VISIBILITY_ADDRESS: usize = 0x55_4230;
+const RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS: usize = 0x55_3F60;
 const RENDERER_SCAN_WORLD_ADDRESS: usize = 0x55_4FE0;
 const RENDERER_CONSTRUCT_RENDER_LIST_ADDRESS: usize = 0x55_56E0;
 const RENDER_SKY_POLYS_ADDRESS: usize = 0x71_4650;
@@ -445,6 +452,30 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
         )),
     }
 
+    let setup_map_visibility = unsafe {
+        MinHook::create_hook(
+            RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS as *mut c_void,
+            renderer_setup_map_entity_visibility_hook as *mut c_void,
+        )
+    };
+    match setup_map_visibility {
+        Ok(trampoline) => {
+            let original = unsafe {
+                std::mem::transmute::<*mut c_void, RendererSetupMapVisibilityFn>(trampoline)
+            };
+            if ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY.set(original).is_ok() {
+                config::log(&format!(
+                    "MC DEBUG probe_installed: name=CRenderer::SetupMapEntityVisibility, target=0x{RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS:08X}, pre_bytes={}, trampoline=0x{:08X}",
+                    code_bytes(RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS),
+                    original as usize
+                ));
+            }
+        }
+        Err(status) => config::log(&format!(
+            "MC DEBUG probe_unavailable: name=CRenderer::SetupMapEntityVisibility, status={status}"
+        )),
+    }
+
     let pre_render = unsafe {
         MinHook::create_hook(
             RENDERER_PRE_RENDER_ADDRESS as *mut c_void,
@@ -481,18 +512,20 @@ fn code_bytes(address: usize) -> String {
 
 pub fn multicore_render_path_diagnostics() -> String {
     format!(
-        "add_entity_calls={}, construct_list_calls={}, scan_world_calls={}, scan_sector_calls={}, setup_visibility_calls={}, pre_render_calls={}, live_code=[add_entity:{}; construct_list:{}; scan_world:{}; scan_sector:{}; setup_visibility:{}; pre_render:{}]",
+        "add_entity_calls={}, construct_list_calls={}, scan_world_calls={}, scan_sector_calls={}, setup_visibility_calls={}, setup_map_visibility_calls={}, pre_render_calls={}, live_code=[add_entity:{}; construct_list:{}; scan_world:{}; scan_sector:{}; setup_visibility:{}; setup_map_visibility:{}; pre_render:{}]",
         RENDERER_ADD_ENTITY_HOOK_HITS.load(Ordering::Relaxed),
         RENDERER_CONSTRUCT_LIST_HITS.load(Ordering::Relaxed),
         RENDERER_SCAN_WORLD_HITS.load(Ordering::Relaxed),
         RENDERER_SCAN_SECTOR_HITS.load(Ordering::Relaxed),
         RENDERER_SETUP_VISIBILITY_HITS.load(Ordering::Relaxed),
+        RENDERER_SETUP_MAP_VISIBILITY_HITS.load(Ordering::Relaxed),
         RENDERER_PRE_RENDER_HITS.load(Ordering::Relaxed),
         code_bytes(RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS),
         code_bytes(RENDERER_CONSTRUCT_RENDER_LIST_ADDRESS),
         code_bytes(RENDERER_SCAN_WORLD_ADDRESS),
         code_bytes(RENDERER_SCAN_SECTOR_LIST_ADDRESS),
         code_bytes(RENDERER_SETUP_ENTITY_VISIBILITY_ADDRESS),
+        code_bytes(RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS),
         code_bytes(RENDERER_PRE_RENDER_ADDRESS)
     )
 }
@@ -559,6 +592,33 @@ unsafe extern "cdecl" fn renderer_setup_entity_visibility_hook(
         config::log(&format!(
             "MC DEBUG render_path_first_hit: name=SetupEntityVisibility, hit={hit}, result={result}, entity={entity:p}, out_distance_null={}, tid={}, cpu={}",
             out_distance.is_null(),
+            unsafe { GetCurrentThreadId() },
+            unsafe { windows::Win32::System::Threading::GetCurrentProcessorNumber() }
+        ));
+    }
+    result
+}
+
+unsafe extern "cdecl" fn renderer_setup_map_entity_visibility_hook(
+    entity: *mut c_void,
+    model_info: *mut c_void,
+    distance: f32,
+    time_in_range: u32,
+) -> i32 {
+    let Some(original) = ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY.get().copied() else {
+        config::log("MC DEBUG probe_error: SetupMapEntityVisibility trampoline unavailable");
+        return 0;
+    };
+
+    // This entrypoint receives the computed distance as a scalar argument.
+    // Workers receive only that number, never a GTA pointer or RenderWare state.
+    let hit = RENDERER_SETUP_MAP_VISIBILITY_HITS.fetch_add(1, Ordering::Relaxed) + 1;
+    multicore::record_map_visibility_sample(distance, 0);
+    let result = unsafe { original(entity, model_info, distance, time_in_range) };
+    if !RENDERER_SETUP_MAP_VISIBILITY_FIRST_HIT.swap(true, Ordering::AcqRel) {
+        config::log(&format!(
+            "MC DEBUG render_path_first_hit: name=SetupMapEntityVisibility, hit={hit}, result={result}, distance={distance:.3}, entity={entity:p}, model_info={model_info:p}, time_in_range={}, tid={}, cpu={}",
+            time_in_range != 0,
             unsafe { GetCurrentThreadId() },
             unsafe { windows::Win32::System::Threading::GetCurrentProcessorNumber() }
         ));
