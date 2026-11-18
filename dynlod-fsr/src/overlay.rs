@@ -2,7 +2,7 @@
 use std::mem::size_of;
 use windows::Win32::Graphics::Direct3D9::*;
 
-use crate::{dynlod, renderer};
+use crate::{dynlod, multicore, renderer};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -58,12 +58,15 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
         let gpu = status.gpu_pct.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "N/A".to_owned());
         let ram = status.ram_mb.map(|v| format!("{v}MB")).unwrap_or_else(|| "N/A".to_owned());
 
-        let lines = [
+        let mc = multicore::status();
+        let lines = vec![
             format!("DYNLOD {} FPS {} TARGET {}", if status.enabled { "ON" } else { "OFF" }, fps, status.target.round() as u32),
             format!("AVG FPS {} CPU {}", avg, cpu),
             format!("RAM {} GPU {}", ram, gpu),
             format!("RENDER {}X{} OUT {}X{}", render_width, render_height, output_width, output_height),
             format!("FSR {} SCALE {}%", if fsr_active { "ON" } else { "OFF" }, scale),
+            format!("MULTICORE USED {}/{} | CPU {}", mc.active_workers, mc.worker_count, mc.cpu_cores),
+            format!("SCENE {} ENT | DONE {} | DROP {}", mc.last_frame_entities, mc.processed_entities, mc.chunks_dropped),
         ];
         let pixel = (output_width / 900).clamp(1, 3) as f32;
         let pad = 8.0 * pixel;

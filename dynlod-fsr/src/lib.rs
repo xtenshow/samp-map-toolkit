@@ -8,6 +8,7 @@ mod dyn_menu;
 mod game;
 mod hooks;
 mod menu;
+mod multicore;
 mod overlay;
 mod renderer;
 mod shaders;
@@ -48,6 +49,7 @@ unsafe extern "system" fn DllMain(
 
 unsafe extern "system" fn initialize(_parameter: *mut c_void) -> u32 {
     config::initialize();
+    multicore::initialize();
     dynlod::initialize();
 
     match unsafe { hooks::install() } {
