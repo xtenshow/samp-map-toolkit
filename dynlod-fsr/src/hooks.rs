@@ -49,7 +49,6 @@ static ORIGINAL_BEFORE_MAIN_MIRROR_RENDER: OnceLock<GameVoidFn> = OnceLock::new(
 static ORIGINAL_RENDER_MIRROR_BUFFER: OnceLock<GameVoidFn> = OnceLock::new();
 static ORIGINAL_RW_CAMERA_BEGIN_UPDATE: OnceLock<RwCameraBeginUpdateFn> = OnceLock::new();
 static ORIGINAL_HUD_DRAW: OnceLock<GameVoidFn> = OnceLock::new();
-    OnceLock::new();
 static ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY: OnceLock<RendererSetupMapVisibilityFn> =
     OnceLock::new();
 static D3D9_HOOKS: OnceLock<Mutex<HashMap<usize, D3D9Hooks>>> = OnceLock::new();
