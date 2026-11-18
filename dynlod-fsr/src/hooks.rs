@@ -1,7 +1,7 @@
 use core::ffi::c_void;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use minhook::MinHook;
@@ -11,6 +11,7 @@ use windows::Win32::Graphics::Direct3D9::{
 };
 use windows::Win32::Graphics::Gdi::RGNDATA;
 use windows::Win32::System::LibraryLoader::LoadLibraryA;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::core::{Interface, s};
 
 use crate::{benchmark, borderless, config, dynlod, game, menu, multicore, overlay, renderer};
@@ -62,6 +63,8 @@ static POST_EFFECTS_DEFER_LOGGED: AtomicBool = AtomicBool::new(false);
 static CORONAS_LOW_DIMENSIONS_LOGGED: AtomicBool = AtomicBool::new(false);
 static MIRROR_FRAME_BLOCK_LOGGED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_DEVICE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static RENDERER_ADD_ENTITY_FIRST_HIT_LOGGED: AtomicBool = AtomicBool::new(false);
+static RENDERER_ADD_ENTITY_HOOK_HITS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     static POST_PROCESS_ACTIVE: Cell<bool> = const { Cell::new(false) };
@@ -278,8 +281,27 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
         .set(unsafe { std::mem::transmute::<*mut c_void, GameVoidFn>(hud_draw) })
         .map_err(|_| "CHud::Draw trampoline was already initialized".to_owned())?;
 
-    // Capture actual RenderWare entity-distance data. Worker threads only
-    // consume copied floats; all entity and D3D access remains on this thread.
+    // Capture actual RenderWare entity-distance data. Record the original
+    // function prologue before MinHook patches it, so the log identifies exactly
+    // which GTA 1.0 US address was detoured.
+    let mut renderer_prologue = [0_u8; 16];
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS as *const u8,
+            renderer_prologue.as_mut_ptr(),
+            renderer_prologue.len(),
+        );
+    }
+    let renderer_prologue_hex = renderer_prologue
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    config::log(&format!(
+        "MC DEBUG hook_target: address=0x{RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS:08X}, callback=0x{:08X}, pointer_bits={}, bytes={renderer_prologue_hex}",
+        renderer_add_entity_hook as usize,
+        usize::BITS
+    ));
     match unsafe {
         MinHook::create_hook(
             RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS as *mut c_void,
@@ -291,7 +313,11 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
                 std::mem::transmute::<*mut c_void, RendererAddEntityFn>(trampoline)
             };
             if ORIGINAL_RENDERER_ADD_ENTITY.set(original).is_ok() {
-                config::log("CRenderer::AddEntityToRenderList capture hook installed for multicore scene preparation");
+                config::log(&format!(
+                    "CRenderer::AddEntityToRenderList capture hook installed: target=0x{RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS:08X}, trampoline=0x{:08X}, callback=0x{:08X}",
+                    original as usize,
+                    renderer_add_entity_hook as usize
+                ));
             } else {
                 config::log("AddEntityToRenderList capture hook skipped: trampoline already initialized");
             }
@@ -305,6 +331,15 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
 }
 
 unsafe extern "cdecl" fn renderer_add_entity_hook(object: *mut c_void, distance: f32) {
+    let hit = RENDERER_ADD_ENTITY_HOOK_HITS.fetch_add(1, Ordering::Relaxed) + 1;
+    if !RENDERER_ADD_ENTITY_FIRST_HIT_LOGGED.swap(true, Ordering::AcqRel) {
+        config::log(&format!(
+            "MC DEBUG render_hook_first_hit: hit={hit}, object={object:p}, distance={distance:.3}, tid={}, cpu={}, original_ready={}",
+            unsafe { GetCurrentThreadId() },
+            unsafe { windows::Win32::System::Threading::GetCurrentProcessorNumber() },
+            ORIGINAL_RENDERER_ADD_ENTITY.get().is_some()
+        ));
+    }
     multicore::record_render_entity(distance);
     if let Some(original) = ORIGINAL_RENDERER_ADD_ENTITY.get().copied() {
         unsafe { original(object, distance) };
