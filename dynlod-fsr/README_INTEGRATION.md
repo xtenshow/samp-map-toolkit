@@ -14,7 +14,7 @@
 
 ## Experimental multi-core scene preparation
 
-- The ASI hooks RenderWare's `CVisibilityPlugins::RenderEntity` callback for the supported GTA SA 1.0 US executable and copies only its entity-distance scalar.
+- The ASI hooks RenderWare's `CRenderer::AddEntityToRenderList` callback for the supported GTA SA 1.0 US executable and copies only its entity-distance scalar.
 - A persistent worker pool (up to 7 threads, normally leaving one logical processor for GTA/SA-MP) splits the captured per-frame entity distances into chunks and computes distance bands and LOD-importance estimates concurrently.
 - Worker threads never dereference GTA entity pointers, mutate game state, call RenderWare, or issue Direct3D commands. If a worker is busy, its chunk is dropped instead of blocking the game thread.
 - The HUD reports active workers, the last logical processor observed by each worker, visible-entity samples, completed worker samples, and dropped chunks.
