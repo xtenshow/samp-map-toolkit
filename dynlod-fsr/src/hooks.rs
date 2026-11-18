@@ -1,7 +1,7 @@
 use core::ffi::c_void;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use minhook::MinHook;
@@ -34,7 +34,8 @@ type ClearFn =
 type StartGameFn = unsafe extern "thiscall" fn(*mut c_void) -> i32;
 type GameVoidFn = unsafe extern "C" fn();
 type RwCameraBeginUpdateFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
-type RendererAddEntityFn = unsafe extern "cdecl" fn(*mut c_void, f32);
+type RendererSetupMapVisibilityFn =
+    unsafe extern "cdecl" fn(*mut c_void, *mut c_void, f32, u32) -> i32;
 
 static ORIGINAL_DIRECT3D_CREATE9: OnceLock<Direct3DCreate9Fn> = OnceLock::new();
 static ORIGINAL_START_GAME: OnceLock<StartGameFn> = OnceLock::new();
@@ -48,7 +49,8 @@ static ORIGINAL_BEFORE_MAIN_MIRROR_RENDER: OnceLock<GameVoidFn> = OnceLock::new(
 static ORIGINAL_RENDER_MIRROR_BUFFER: OnceLock<GameVoidFn> = OnceLock::new();
 static ORIGINAL_RW_CAMERA_BEGIN_UPDATE: OnceLock<RwCameraBeginUpdateFn> = OnceLock::new();
 static ORIGINAL_HUD_DRAW: OnceLock<GameVoidFn> = OnceLock::new();
-static ORIGINAL_RENDERER_ADD_ENTITY: OnceLock<RendererAddEntityFn> = OnceLock::new();
+static ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY: OnceLock<RendererSetupMapVisibilityFn> =
+    OnceLock::new();
 static D3D9_HOOKS: OnceLock<Mutex<HashMap<usize, D3D9Hooks>>> = OnceLock::new();
 static CREATE_DEVICE_TARGETS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
 static DEVICE_HOOKS: OnceLock<Mutex<HashMap<usize, DeviceHooks>>> = OnceLock::new();
@@ -89,7 +91,7 @@ const BEFORE_MAIN_MIRROR_RENDER_ADDRESS: usize = 0x72_7140;
 const RENDER_MIRROR_BUFFER_ADDRESS: usize = 0x72_6090;
 const RW_CAMERA_BEGIN_UPDATE_ADDRESS: usize = 0x7E_E190;
 const HUD_DRAW_ADDRESS: usize = 0x58_FAE0;
-const RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS: usize = 0x55_34B0;
+const RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS: usize = 0x55_3F60;
 const RENDER_SKY_POLYS_ADDRESS: usize = 0x71_4650;
 const RESET_RENDERWARE_STATE_ADDRESS: usize = 0x73_4650;
 const RS_GLOBAL_MAXIMUM_WIDTH_ADDRESS: usize = 0xC1_7044;
@@ -278,37 +280,44 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
         .set(unsafe { std::mem::transmute::<*mut c_void, GameVoidFn>(hud_draw) })
         .map_err(|_| "CHud::Draw trampoline was already initialized".to_owned())?;
 
-    // Capture actual RenderWare entity-distance data. Worker threads only
-    // consume copied floats; all entity and D3D access remains on this thread.
-    match unsafe {
+        // Capture the scalar distance after GTA has completed its visibility test.
+    // The original function always runs on the game thread; only the copied
+    // distance and result code are sent to the worker pipeline.
+    let setup_map_visibility = unsafe {
         MinHook::create_hook(
-            RENDERER_ADD_ENTITY_TO_RENDER_LIST_ADDRESS as *mut c_void,
-            renderer_add_entity_hook as *mut c_void,
+            RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS as *mut c_void,
+            renderer_setup_map_entity_visibility_hook as *mut c_void,
         )
-    } {
-        Ok(trampoline) => {
-            let original = unsafe {
-                std::mem::transmute::<*mut c_void, RendererAddEntityFn>(trampoline)
-            };
-            if ORIGINAL_RENDERER_ADD_ENTITY.set(original).is_ok() {
-                config::log("CRenderer::AddEntityToRenderList capture hook installed for multicore scene preparation");
-            } else {
-                config::log("AddEntityToRenderList capture hook skipped: trampoline already initialized");
-            }
-        }
-        Err(status) => {
-            config::log(&format!("Multicore AddEntityToRenderList capture unavailable: {status}"));
-        }
     }
+    .map_err(|status| format!("CRenderer::SetupMapEntityVisibility detour: {status}"))?;
 
+    let original = unsafe {
+        std::mem::transmute::<*mut c_void, RendererSetupMapVisibilityFn>(setup_map_visibility)
+    };
+    ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY
+        .set(original)
+        .map_err(|_| "SetupMapEntityVisibility trampoline was already initialized".to_owned())?;
+
+    config::log(&format!(
+        "CRenderer::SetupMapEntityVisibility capture hook installed: target=0x{RENDERER_SETUP_MAP_ENTITY_VISIBILITY_ADDRESS:08X}"
+    ));
     Ok(())
 }
 
-unsafe extern "cdecl" fn renderer_add_entity_hook(object: *mut c_void, distance: f32) {
-    multicore::record_render_entity(distance);
-    if let Some(original) = ORIGINAL_RENDERER_ADD_ENTITY.get().copied() {
-        unsafe { original(object, distance) };
-    }
+unsafe extern "cdecl" fn renderer_setup_map_entity_visibility_hook(
+    entity: *mut c_void,
+    model_info: *mut c_void,
+    distance: f32,
+    time_in_range: u32,
+) -> i32 {
+    let Some(original) = ORIGINAL_RENDERER_SETUP_MAP_VISIBILITY.get().copied() else {
+        return 0;
+    };
+
+    // Preserve GTA's original decision and capture only scalar data afterward.
+    let result = unsafe { original(entity, model_info, distance, time_in_range) };
+    multicore::record_map_visibility_sample(distance, result);
+    result
 }
 
 unsafe extern "thiscall" fn start_game_hook(menu: *mut c_void) -> i32 {

@@ -65,8 +65,8 @@ pub fn draw(device: &IDirect3DDevice9) -> Result<(), String> {
             format!("RAM {} GPU {}", ram, gpu),
             format!("RENDER {}X{} OUT {}X{}", render_width, render_height, output_width, output_height),
             format!("FSR {} SCALE {}%", if fsr_active { "ON" } else { "OFF" }, scale),
-            format!("MULTICORE USED {}/{} | CPU {}", mc.active_workers, mc.worker_count, mc.cpu_cores),
-            format!("SCENE {} ENT | DONE {} | DROP {}", mc.last_frame_entities, mc.processed_entities, mc.chunks_dropped),
+            format!("SCENE WORKERS {}/{} | CPU {}", mc.active_workers, mc.worker_count, mc.cpu_cores),
+            format!("SAMPLES {} | DONE {} | DROP {}", mc.last_frame_entities, mc.processed_entities, mc.chunks_dropped),
         ];
         let pixel = (output_width / 900).clamp(1, 3) as f32;
         let pad = 8.0 * pixel;
