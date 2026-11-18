@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::RGNDATA;
 use windows::Win32::System::LibraryLoader::LoadLibraryA;
 use windows::core::{Interface, s};
 
-use crate::{benchmark, borderless, config, dynlod, game, menu, overlay, renderer};
+use crate::{benchmark, borderless, config, dynlod, game, menu, multicore, overlay, renderer};
 
 type Direct3DCreate9Fn = unsafe extern "system" fn(u32) -> *mut c_void;
 type CreateDeviceFn = unsafe extern "system" fn(
@@ -34,6 +34,7 @@ type ClearFn =
 type StartGameFn = unsafe extern "thiscall" fn(*mut c_void) -> i32;
 type GameVoidFn = unsafe extern "C" fn();
 type RwCameraBeginUpdateFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+type VisibilityRenderEntityFn = unsafe extern "cdecl" fn(*mut c_void, f32);
 
 static ORIGINAL_DIRECT3D_CREATE9: OnceLock<Direct3DCreate9Fn> = OnceLock::new();
 static ORIGINAL_START_GAME: OnceLock<StartGameFn> = OnceLock::new();
@@ -47,6 +48,7 @@ static ORIGINAL_BEFORE_MAIN_MIRROR_RENDER: OnceLock<GameVoidFn> = OnceLock::new(
 static ORIGINAL_RENDER_MIRROR_BUFFER: OnceLock<GameVoidFn> = OnceLock::new();
 static ORIGINAL_RW_CAMERA_BEGIN_UPDATE: OnceLock<RwCameraBeginUpdateFn> = OnceLock::new();
 static ORIGINAL_HUD_DRAW: OnceLock<GameVoidFn> = OnceLock::new();
+static ORIGINAL_VISIBILITY_RENDER_ENTITY: OnceLock<VisibilityRenderEntityFn> = OnceLock::new();
 static D3D9_HOOKS: OnceLock<Mutex<HashMap<usize, D3D9Hooks>>> = OnceLock::new();
 static CREATE_DEVICE_TARGETS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
 static DEVICE_HOOKS: OnceLock<Mutex<HashMap<usize, DeviceHooks>>> = OnceLock::new();
@@ -87,6 +89,7 @@ const BEFORE_MAIN_MIRROR_RENDER_ADDRESS: usize = 0x72_7140;
 const RENDER_MIRROR_BUFFER_ADDRESS: usize = 0x72_6090;
 const RW_CAMERA_BEGIN_UPDATE_ADDRESS: usize = 0x7E_E190;
 const HUD_DRAW_ADDRESS: usize = 0x58_FAE0;
+const VISIBILITY_RENDER_ENTITY_ADDRESS: usize = 0x73_2B40;
 const RENDER_SKY_POLYS_ADDRESS: usize = 0x71_4650;
 const RESET_RENDERWARE_STATE_ADDRESS: usize = 0x73_4650;
 const RS_GLOBAL_MAXIMUM_WIDTH_ADDRESS: usize = 0xC1_7044;
@@ -275,7 +278,37 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
         .set(unsafe { std::mem::transmute::<*mut c_void, GameVoidFn>(hud_draw) })
         .map_err(|_| "CHud::Draw trampoline was already initialized".to_owned())?;
 
+    // Capture actual RenderWare entity-distance data. Worker threads only
+    // consume copied floats; all entity and D3D access remains on this thread.
+    match unsafe {
+        MinHook::create_hook(
+            VISIBILITY_RENDER_ENTITY_ADDRESS as *mut c_void,
+            visibility_render_entity_hook as *mut c_void,
+        )
+    } {
+        Ok(trampoline) => {
+            let original = unsafe {
+                std::mem::transmute::<*mut c_void, VisibilityRenderEntityFn>(trampoline)
+            };
+            if ORIGINAL_VISIBILITY_RENDER_ENTITY.set(original).is_ok() {
+                config::log("RenderWare RenderEntity capture hook installed for multicore scene preparation");
+            } else {
+                config::log("RenderEntity capture hook skipped: trampoline already initialized");
+            }
+        }
+        Err(status) => {
+            config::log(&format!("Multicore RenderEntity capture unavailable: {status}"));
+        }
+    }
+
     Ok(())
+}
+
+unsafe extern "cdecl" fn visibility_render_entity_hook(object: *mut c_void, distance: f32) {
+    multicore::record_render_entity(distance);
+    if let Some(original) = ORIGINAL_VISIBILITY_RENDER_ENTITY.get().copied() {
+        unsafe { original(object, distance) };
+    }
 }
 
 unsafe extern "thiscall" fn start_game_hook(menu: *mut c_void) -> i32 {
@@ -964,6 +997,7 @@ unsafe extern "system" fn present_hook(
     };
     // Count and draw once per completed game frame, not once per EndScene.
     POST_PROCESS_ACTIVE.with(|active| active.set(true));
+    multicore::submit_frame();
     dynlod::on_frame();
     if let Some(device_reference) = unsafe { IDirect3DDevice9::from_raw_borrowed(&device) }
         && let Err(error) = overlay::draw(device_reference)
