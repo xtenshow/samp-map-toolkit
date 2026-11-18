@@ -391,6 +391,10 @@ fn maybe_log_diagnostics() {
         "MC DEBUG game_state: {}",
         crate::game::diagnostic_snapshot()
     ));
+    crate::config::log(&format!(
+        "MC DEBUG render_path: {}",
+        crate::hooks::multicore_render_path_diagnostics()
+    ));
 }
 
 pub fn status() -> Status {
