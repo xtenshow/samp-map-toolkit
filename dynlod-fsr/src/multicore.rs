@@ -281,11 +281,14 @@ pub fn record_render_entity(distance: f32) {
 }
 
 /// Capture the computed scalar distance passed to SetupMapEntityVisibility.
-pub fn record_map_visibility_sample(distance: f32, _result: i32) {
+pub fn record_map_visibility_sample(distance: f32, result: i32) {
     let Some(pool) = POOL.get() else {
         return;
     };
     pool.map_visibility_calls.fetch_add(1, Ordering::Relaxed);
+    if (0..4).contains(&result) {
+        pool.map_visibility_results[result as usize].fetch_add(1, Ordering::Relaxed);
+    }
     record_distance(pool, distance);
 }
 
@@ -381,10 +384,14 @@ fn maybe_log_diagnostics() {
 
     let snapshot = status();
     crate::config::log(&format!(
-        "MC DEBUG snapshot: present_calls={}, hook_calls={}, map_visibility_calls={}, valid_distances={}, invalid_distances={}, total_samples={}, last_frame_entities={}, max_frame_entities={}, frames_with_samples={}, empty_frames={}, sample_cap_hits={}, chunks_submitted={}, chunks_dropped={}, processed_entities={}, workers_used={}/{}, worker_jobs=[{}], observed_cpus={}, capture_tid={}, present_tid={}, last_distance={:.2}, max_distance={:.2}, worker_time_ms={}",
+        "MC DEBUG snapshot: present_calls={}, add_entity_hook_calls={}, map_visibility_calls={}, visibility_results=[invisible:{};visible:{};culled:{};streamme:{}], valid_distances={}, invalid_distances={}, total_samples={}, last_frame_entities={}, max_frame_entities={}, frames_with_samples={}, empty_frames={}, sample_cap_hits={}, chunks_submitted={}, chunks_dropped={}, processed_entities={}, workers_used={}/{}, worker_jobs=[{}], observed_cpus={}, capture_tid={}, present_tid={}, last_distance={:.2}, max_distance={:.2}, worker_time_ms={}",
         snapshot.present_calls,
         snapshot.hook_calls,
         snapshot.map_visibility_calls,
+        snapshot.map_visibility_results[0],
+        snapshot.map_visibility_results[1],
+        snapshot.map_visibility_results[2],
+        snapshot.map_visibility_results[3],
         snapshot.valid_distances,
         snapshot.invalid_distances,
         snapshot.total_samples_captured,
@@ -482,7 +489,9 @@ pub fn status() -> Status {
         last_distance: f32::from_bits(pool.last_distance_bits.load(Ordering::Acquire)),
         max_distance: f32::from_bits(pool.max_distance_bits.load(Ordering::Acquire)),
         map_visibility_calls: pool.map_visibility_calls.load(Ordering::Relaxed),
-        map_visibility_results: [0; 4],
+        map_visibility_results: std::array::from_fn(|index| {
+            pool.map_visibility_results[index].load(Ordering::Relaxed)
+        }),
     }
 }
 
