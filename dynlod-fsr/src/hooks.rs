@@ -291,7 +291,7 @@ unsafe fn install_game_transition_hooks() -> Result<(), String> {
                 std::mem::transmute::<*mut c_void, RendererAddEntityFn>(trampoline)
             };
             if ORIGINAL_RENDERER_ADD_ENTITY.set(original).is_ok() {
-                config::log("RenderWare RenderEntity capture hook installed for multicore scene preparation");
+                config::log("CRenderer::AddEntityToRenderList capture hook installed for multicore scene preparation");
             } else {
                 config::log("AddEntityToRenderList capture hook skipped: trampoline already initialized");
             }
