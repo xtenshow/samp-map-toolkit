@@ -10,7 +10,8 @@ use windows::Win32::Graphics::Direct3D9::{
     D3DCLEAR_TARGET, D3DDEVTYPE, D3DPRESENT_PARAMETERS, D3DRECT, D3DSBT_ALL, IDirect3DDevice9,
 };
 use windows::Win32::Graphics::Gdi::RGNDATA;
-use windows::Win32::System::LibraryLoader::LoadLibraryA;\nuse windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::LibraryLoader::LoadLibraryA;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::core::{Interface, s};
 
 use crate::{benchmark, borderless, config, dynlod, game, menu, multicore, overlay, renderer};
