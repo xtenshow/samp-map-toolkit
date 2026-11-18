@@ -199,7 +199,7 @@ pub fn submit_frame() {
     let Some(pool) = POOL.get() else {
         return;
     };
-    let samples = FRAME_DISTANCES.with(|buffer| std::mem::take(&mut *buffer.borrow_mut()));
+    let samples = FRAME_DISTANCES.with(|buffer| buffer.borrow_mut().split_off(0));
     pool.last_frame_entities.store(samples.len(), Ordering::Relaxed);
     if samples.is_empty() {
         return;
