@@ -12,6 +12,14 @@
 - Far-clip and world LOD distances use the same adaptive quality multiplier. Lua-only SA-MP callbacks for nametags, 3D text, and chat bubbles are not part of this ASI build.
 - Diagnostics are written to `gta_sa_fsr.log`.
 
+## Experimental multi-core scene preparation
+
+- The ASI hooks RenderWare's `CVisibilityPlugins::RenderEntity` callback for the supported GTA SA 1.0 US executable and copies only its entity-distance scalar.
+- A persistent worker pool (up to 7 threads, normally leaving one logical processor for GTA/SA-MP) splits the captured per-frame entity distances into chunks and computes distance bands and LOD-importance estimates concurrently.
+- Worker threads never dereference GTA entity pointers, mutate game state, call RenderWare, or issue Direct3D commands. If a worker is busy, its chunk is dropped instead of blocking the game thread.
+- The HUD reports active workers, the last logical processor observed by each worker, visible-entity samples, completed worker samples, and dropped chunks.
+- This is a safe first multi-core experiment that moves a real per-entity scene-preparation analysis off the main thread. It does **not** make the original RenderWare draw calls, GTA simulation, or SA-MP networking multithreaded; expect no guaranteed FPS gain. The counters let us verify whether the analysis is being distributed before attempting deeper renderer changes.
+
 ## Build
 
 The GitHub Actions workflow builds for `i686-pc-windows-msvc`, runs unit tests,
