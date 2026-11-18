@@ -87,6 +87,8 @@ struct Pool {
     last_distance_bits: AtomicU32,
     max_distance_bits: AtomicU32,
     first_present_logged: AtomicBool,
+    map_visibility_calls: AtomicU64,
+    map_visibility_results: [AtomicU64; 4],
 }
 
 static POOL: OnceLock<Pool> = OnceLock::new();
@@ -122,6 +124,8 @@ pub struct Status {
     pub last_present_thread: u32,
     pub last_distance: f32,
     pub max_distance: f32,
+    pub map_visibility_calls: u64,
+    pub map_visibility_results: [u64; 4],
 }
 
 pub fn initialize() {
@@ -257,6 +261,8 @@ pub fn initialize() {
         last_distance_bits: AtomicU32::new(0),
         max_distance_bits: AtomicU32::new(0),
         first_present_logged: AtomicBool::new(false),
+        map_visibility_calls: AtomicU64::new(0),
+        map_visibility_results: std::array::from_fn(|_| AtomicU64::new(0)),
     });
     crate::config::log(&format!(
         "Multicore scene pipeline ready: {count} worker threads; Direct3D remains on the game thread"
@@ -271,8 +277,20 @@ pub fn record_render_entity(distance: f32) {
         return;
     };
     pool.hook_calls.fetch_add(1, Ordering::Relaxed);
-    pool.last_capture_thread.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+    record_distance(pool, distance);
+}
 
+/// Capture the computed scalar distance passed to SetupMapEntityVisibility.
+pub fn record_map_visibility_sample(distance: f32, _result: i32) {
+    let Some(pool) = POOL.get() else {
+        return;
+    };
+    pool.map_visibility_calls.fetch_add(1, Ordering::Relaxed);
+    record_distance(pool, distance);
+}
+
+fn record_distance(pool: &Pool, distance: f32) {
+    pool.last_capture_thread.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
     if !distance.is_finite() || distance < 0.0 {
         pool.invalid_distances.fetch_add(1, Ordering::Relaxed);
         return;
@@ -363,9 +381,10 @@ fn maybe_log_diagnostics() {
 
     let snapshot = status();
     crate::config::log(&format!(
-        "MC DEBUG snapshot: present_calls={}, hook_calls={}, valid_distances={}, invalid_distances={}, total_samples={}, last_frame_entities={}, max_frame_entities={}, frames_with_samples={}, empty_frames={}, sample_cap_hits={}, chunks_submitted={}, chunks_dropped={}, processed_entities={}, workers_used={}/{}, worker_jobs=[{}], observed_cpus={}, capture_tid={}, present_tid={}, last_distance={:.2}, max_distance={:.2}, worker_time_ms={}",
+        "MC DEBUG snapshot: present_calls={}, hook_calls={}, map_visibility_calls={}, valid_distances={}, invalid_distances={}, total_samples={}, last_frame_entities={}, max_frame_entities={}, frames_with_samples={}, empty_frames={}, sample_cap_hits={}, chunks_submitted={}, chunks_dropped={}, processed_entities={}, workers_used={}/{}, worker_jobs=[{}], observed_cpus={}, capture_tid={}, present_tid={}, last_distance={:.2}, max_distance={:.2}, worker_time_ms={}",
         snapshot.present_calls,
         snapshot.hook_calls,
+        snapshot.map_visibility_calls,
         snapshot.valid_distances,
         snapshot.invalid_distances,
         snapshot.total_samples_captured,
@@ -462,6 +481,8 @@ pub fn status() -> Status {
         last_present_thread: pool.last_present_thread.load(Ordering::Acquire),
         last_distance: f32::from_bits(pool.last_distance_bits.load(Ordering::Acquire)),
         max_distance: f32::from_bits(pool.max_distance_bits.load(Ordering::Acquire)),
+        map_visibility_calls: pool.map_visibility_calls.load(Ordering::Relaxed),
+        map_visibility_results: [0; 4],
     }
 }
 
