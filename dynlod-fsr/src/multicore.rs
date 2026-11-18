@@ -1,8 +1,9 @@
 //! Experimental multi-core scene preparation.
 //!
-//! RenderWare and Direct3D calls stay on GTA's render thread. The RenderEntity
-//! callback records only scalar distances; persistent workers classify the
-//! the visible-entity render-list batch and calculate LOD priority metrics off-thread.
+//! RenderWare and Direct3D calls stay on GTA's render thread. The
+//! CRenderer::AddEntityToRenderList hook records only scalar distances;
+//! persistent workers classify the visible-entity render-list batch and
+//! calculate LOD-priority metrics off-thread.
 //! No worker reads or writes GTA memory, RenderWare objects, or D3D resources.
 
 use std::cell::RefCell;
