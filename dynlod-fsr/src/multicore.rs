@@ -427,7 +427,7 @@ pub fn status() -> Status {
     }
 
     let processors = (0..64)
-        .filter(|processor| processors_mask & (1_u64 << processor) != 0)
+        .filter(|processor| processors_mask & (1_u64 << *processor) != 0)
         .map(|processor| processor.to_string())
         .collect::<Vec<_>>();
 
